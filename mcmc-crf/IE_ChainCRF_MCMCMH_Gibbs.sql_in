@@ -1,0 +1,99 @@
+
+/************************************************
+ * MCMC-MH Gibbs inference over 
+ * Linear-Chain CRF
+ ***********************************************/
+
+set search_path to ie_lccrf_mcmcmh;
+
+/* 
+ * generate skeleton of n proposal 
+ * with doc_id, start_pos 
+ * without label for
+ */
+
+create or replace function MHSampleGibbs_genProposals(n integer) returns void as $$
+declare
+
+begin
+
+  drop table if exists Proposals;
+  CREATE TABLE Proposals (
+    id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer,
+    label integer,
+    prev_world integer[],
+    factors integer[],
+    factor_lens integer[]
+  );
+
+insert into Proposals
+with X as (
+	select foo.id, foo.doc_id, (tmp%bar.doc_len) as start_pos 
+	from (
+        select foo id, ((foo-1)/($1/(select count(*) from doc_id_tbl))+1) as doc_id, ((foo-1)%($1/(select count(*) from doc_id_tbl))) as tmp 
+        from generate_series(1,$1) foo) foo, doc_id_tbl bar
+	where foo.doc_id = bar.doc_id
+)
+select X.id, S.doc_id, S.start_pos, S.seg_id, null::integer as label, null::integer[] as prevWorld, null::integer[] as factors, null::integer[] as factorLens
+ from X, segmenttbl S
+ where X.doc_id=S.doc_id and X.start_pos=S.start_pos;
+
+end;
+$$ language plpgsql;
+
+
+/*
+ * compute the MH Gibbs samples 
+ * based on local probability distribution
+ */
+
+--TODO
+create function Gibbs_getalpha(getalpha_io, getalpha_io) returns getalpha_io as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/ie_lccrf_mcmcmh', 'Gibbs_getalpha' language c called on null input;
+
+CREATE AGGREGATE Gibbs_getalpha_agg(getalpha_io)
+(
+    sfunc = ie_lccrf_mcmcmh.Gibbs_getalpha,
+    stype = ie_lccrf_mcmcmh.getalpha_io
+    -- initial state is null
+);
+
+create function MHSampleGibbs_genSamples () returns void as $$
+declare
+
+begin
+
+  insert into MHSamples
+  select world_id, doc_id, start_pos, seg_id, (foo.alpha).label
+  from (
+-- TODO: world_id can be replaced by proposal.id+1
+        select nextval('ie_lccrf_mcmcmh.world_id') world_id, doc_id, start_pos, seg_id, ie_lccrf_mcmcmh.Gibbs_getalpha_agg((doc_id, start_pos, label, 0.0, prev_world, factors, factor_lens)::ie_lccrf_mcmcmh.getalpha_io) over (order by id) alpha
+        from (select * from proposals order by id) foo) foo
+  where (foo.alpha).doc_id <> -1;
+
+end;
+$$ language plpgsql;
+
+
+/* 
+ * generate samples
+ * with Gibbs Sampling algorithm
+ * n is the number of samples to be drawn
+ *
+ */
+
+create or replace function MHSampleGibbs (n integer) returns void as $$
+declare
+
+begin
+
+  perform ie_lccrf_mcmcmh.MHSample_Init();
+  perform ie_lccrf_mcmcmh.MHSampleGibbs_genProposals($1);
+  perform ie_lccrf_mcmcmh.MHSampleSimpleQuery_updateProposals ();
+  perform ie_lccrf_mcmcmh.MHSampleGibbs_genSamples ();
+
+end;
+$$ language plpgsql;
+

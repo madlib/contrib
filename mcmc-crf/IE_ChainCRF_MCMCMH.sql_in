@@ -1,0 +1,706 @@
+
+------------------------------------------------
+-- A model for Information Extraction 
+-- Linear-Chain CRF
+-- Using MCMC-MH for approximate inference
+------------------------------------------------
+
+set search_path to public;
+drop schema if exists ie_lccrf_mcmcmh cascade;
+create schema ie_lccrf_mcmcmh;
+set search_path to ie_lccrf_mcmcmh;
+
+create function write_out(text) returns void as 
+$$ 
+begin 
+raise notice '%',$1; 
+end; 
+$$ language plpgsql;
+
+create type getalpha_io as (
+        doc_id          integer,
+        start_pos       integer,
+        label           integer,
+        alpha           real, 
+        cur 		integer[],
+	factors		integer[],
+	factor_lens	integer[]
+);
+
+CREATE TABLE segmenttbl (
+    id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer,
+    label integer
+);
+
+CREATE TABLE doc_id_tbl (
+    doc_id integer, 
+    doc_len integer
+);
+
+CREATE TABLE mrtbl (
+    seg_id integer,
+    score integer[]
+);
+
+CREATE TABLE labels (
+    id integer,
+    label text
+);
+
+CREATE TABLE segment_hashtbl (
+	seg_text text,
+	seg_id integer
+);
+
+CREATE TABLE MHSamples (
+    world_id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer,
+    label integer
+);
+
+CREATE TABLE Proposals (
+    id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer,
+    label integer,
+    prev_world integer[],
+    factors integer[],
+    factor_lens integer[]
+);
+
+CREATE TABLE u10 (
+    doc_id integer,
+    start_pos integer,
+    seg_id integer,
+    label integer,
+    score integer
+);
+
+CREATE TABLE m (
+    world_id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer, 
+    label integer
+);
+
+CREATE TABLE x (
+    world_id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer
+);
+
+CREATE TABLE y (
+    world_id integer,
+    tmp_id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer, 
+    label integer
+);
+
+CREATE TABLE z (
+    world_id integer,
+    tmp_id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer, 
+    label integer,
+    r integer
+);
+
+create function getscore(integer, integer, anyarray, integer) returns integer as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/ie_lccrf_mcmcmh', 'getscore' language c called on null input;
+
+-- Note: maxvalue of world_id is the maximum number of samples
+create sequence world_id start 1;
+
+-- genRWInitialWorld
+-- Assume: 
+-- 1) the domain table of a prob attr (e.g., labels)
+--    has id 1 ... n where n is the number of possible values
+-- 2) world_id sequence exists 
+create function genRWInitialWorld() returns setof MHSamples 
+	LANGUAGE sql STRICT 
+	as $_$
+select setval('ie_lccrf_mcmcmh.world_id',1)::integer as world_id, doc_id, start_pos, seg_id, trunc(random()*(select count(*) from labels)+1)::integer as label
+from segmenttbl as return;
+$_$;
+
+-- genMAPInitialWorld
+create function genMAPInitialWorld() returns setof MHSamples 
+	LANGUAGE sql STRICT 
+	as $_$
+truncate u10;
+select ie_lccrf_viterbi.viterbi_top1(doc_id) from doc_id_tbl;
+select setval('ie_lccrf_mcmcmh.world_id',1)::integer as world_id, doc_id, start_pos, seg_id, (label+1) as label
+from u10 as return;
+$_$;
+
+-- genAllSameInitialWorld
+create function genAllSameInitialWorld(integer) returns setof MHSamples 
+	LANGUAGE sql STRICT 
+	as $_$
+select setval('ie_lccrf_mcmcmh.world_id',1)::integer as world_id, doc_id, start_pos, seg_id, $1 as label
+from segmenttbl as return;
+$_$;
+
+-- get Initial label states of a document 
+-- indexed by start_pos
+create function getInitialState(doc_id integer) returns integer[]
+	LANGUAGE sql STRICT 
+	as $_$
+select array(select label from mhsamples where world_id=1 and doc_id=$1 order by start_pos);
+$_$;
+
+-- getInitialWorld of a document 
+-- TODO: could have better implementation but should be called only once
+-- for each document
+create function getInitialWorld(doc_id integer) returns integer[]
+	LANGUAGE sql STRICT 
+	as $_$
+select array(select doc_id from mhsamples where world_id=1 and doc_id=$1 order by start_pos) || array(select start_pos from mhsamples where world_id=1 and doc_id=$1 order by start_pos) || array(select label from mhsamples where world_id=1 and doc_id=$1 order by start_pos);
+$_$;
+
+create function getCurWorld(doc_id integer) returns integer[]
+	LANGUAGE sql STRICT
+	as $_$
+with curworld as (
+select mhs.* 
+from (	
+    select start_pos, max(world_id) world_id 	 from mhsamples 
+    where doc_id=$1 
+    group by start_pos) foo, mhsamples mhs 
+where mhs.world_id = foo.world_id and doc_id=$1 and mhs.start_pos = foo.start_pos 
+order by start_pos)
+select array(select doc_id from curworld) || array(select start_pos from curworld) || array(select label from curworld);
+$_$;
+
+-- getFactors of a document for each token
+-- order by position
+
+CREATE AGGREGATE array_cat_agg(anyarray)
+(
+    sfunc = array_cat,
+    stype = anyarray,
+    initcond = '{}'
+);
+
+create function getFactors(doc_id integer) returns integer[]
+	LANGUAGE sql STRICT
+	as $_$
+select ie_lccrf_mcmcmh.array_cat_agg(score)
+from (
+select s.seg_id, score
+from segmenttbl S, mrtbl M
+where doc_id=$1 and S.seg_id=M.seg_id
+order by s.start_pos) foo
+$_$;
+
+create function getFactorLengths(doc_id integer) returns integer[]
+	LANGUAGE sql STRICT
+	as $_$
+select array_agg(array_length(score,1))
+from (
+select s.seg_id, score
+from segmenttbl S, mrtbl M
+where doc_id=$1 and S.seg_id=M.seg_id
+order by s.start_pos) foo;
+$_$;
+
+-- Random Walk Proposal function
+-- randomly pick a setof segmenttbl tuple 
+-- with random label values
+create function RWProposal (sample_size integer) returns setof ie_lccrf_mcmcmh.Proposals 
+language sql strict
+as $_$
+ with X as (
+-- row_num start with 1
+	select generate_series as id, trunc(random()*(select count(*) from segmenttbl)+1) as row_num
+	from generate_series(1,$1))
+ select X.id, S.doc_id, S.start_pos, S.seg_id, trunc(random()*(select count(*) from labels)+1)::integer as label, null::integer[] as prevWorld, null::integer[] as factors, null::integer[] as factorLens	
+ from X, segmenttbl S
+ where X.row_num = S.id;
+$_$;
+
+-- Sequential Proposal function
+-- batch pick a set of samples (sample_size/num_doc) for each document in order of the doc_id 
+--TODO
+create function SeqProposal (sample_size integer) returns setof ie_lccrf_mcmcmh.Proposals 
+language sql strict
+as $_$
+ with X as (
+-- start_pos start with 0
+	select foo.id as id, foo.doc_id as doc_id, 
+	  trunc(random()*bar.doc_len) as start_pos 
+	from (
+	  select generate_series id, ((generate_series-1)/($1/(select count(*) from doc_id_tbl))+1) as doc_id 
+	  from generate_series(1,$1)) foo, doc_id_tbl bar
+	where foo.doc_id = bar.doc_id 
+ )
+ select X.id, S.doc_id, S.start_pos, S.seg_id, trunc(random()*(select count(*) from labels)+1)::integer as label, null::integer[] as prevWorld, null::integer[] as factors, null::integer[] as factorLens	
+ from X, segmenttbl S
+ where X.doc_id=S.doc_id and X.start_pos=S.start_pos;
+$_$;
+
+create function biased_samples(integer, integer, integer, real) returns setof integer as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/ie_lccrf_mcmcmh', 'biased_samples' language c strict;
+
+
+-- Biased Proposal function
+-- pick sample belongs to the same doc as the previous sample with \beta probility, different doc with (1-\beta) probability 
+--TODO: random number generator in C cannot generate >20,000 random numbers, similar could be true for SQL
+create sequence sample_id start 1;
+create function BiasedProposal (sample_size integer) returns setof ie_lccrf_mcmcmh.Proposals 
+language sql strict
+as $_$
+ --select setval('ie_lccrf_mcmcmh.sample_id',1);
+ with X as (
+	select nextval('ie_lccrf_mcmcmh.sample_id') as id, biased_samples as doc_id, trunc(random()*bar.doc_len) as start_pos 
+	from (select * from ie_lccrf_mcmcmh.biased_samples(1,(select count(*) from doc_id_tbl)::integer, $1, 0.9::real)) foo, doc_id_tbl bar
+	where foo.biased_samples = bar.doc_id
+ )
+ select X.id::integer, S.doc_id, S.start_pos, S.seg_id, trunc(random()*(select count(*) from labels)+1)::integer as label, null::integer[] as prevWorld, null::integer[] as factors, null::integer[] as factorLens	
+ from X, segmenttbl S
+ where X.doc_id = S.doc_id and X.start_pos = S.start_pos;
+$_$;
+
+create function getalpha(getalpha_io, getalpha_io) returns getalpha_io as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/ie_lccrf_mcmcmh', 'getalpha' language c called on null input;
+
+CREATE AGGREGATE getalpha_agg(getalpha_io)
+(
+    sfunc = ie_lccrf_mcmcmh.getalpha,
+    stype = ie_lccrf_mcmcmh.getalpha_io
+    -- initial state is null
+);
+
+/* 
+ * initializations for mhsample
+ */
+
+create function MHSample_Init () returns void as $$
+declare
+
+begin
+
+  drop table if exists MHSamples;
+  CREATE TABLE MHSamples (
+    world_id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer,
+    label integer
+  );
+  
+--  insert into MHSamples select * from ie_lccrf_mcmcmh.genRWInitialWorld();
+--  insert into MHSamples select * from ie_lccrf_mcmcmh.genMAPInitialWorld();
+  insert into MHSamples select * from ie_lccrf_mcmcmh.genAllSameInitialWorld(2);
+  create index world_id_doc_id_mhsamples on mhsamples (world_id, doc_id);
+  analyze MHSamples;
+  
+end;
+$$ language plpgsql;
+
+create function MHSample_Init (dom text) returns void as $$
+declare
+
+begin
+
+  execute 'set search_path to ' || $1;
+  perform ie_lccrf_mcmcmh.MHSample_Init();
+
+end;
+$$ language plpgsql;
+
+/* 
+ * compute a set of proposals
+ * TODO: currently the following must be observed:
+ * number of samples (n) > number of document
+ */
+
+create function MHSample_genProposals (n integer) returns void as $$
+declare
+
+begin
+
+  drop table if exists Proposals;
+  CREATE TABLE Proposals (
+    id integer,
+    doc_id integer,
+    start_pos integer,
+    seg_id integer,
+    label integer,
+    prev_world integer[],
+    factors integer[],
+    factor_lens integer[]
+  );
+
+  insert into Proposals select * from ie_lccrf_mcmcmh.SeqProposal($1); 
+--  insert into Proposals select * from ie_lccrf_mcmcmh.BiasedProposal($1); 
+--  insert into Proposals select * from ie_lccrf_mcmcmh.RWProposal($1); 
+--  create index proposals_id_doc_id on proposals (id, doc_id);
+--  analyze proposals;
+
+end;
+$$ language plpgsql;
+create function MHSample_genProposals (dom text, n integer) returns void as $$
+declare
+
+begin
+
+  execute 'set search_path to ' || $1;
+  perform ie_lccrf_mcmcmh.MHSample_genProposals($2);
+
+end;
+$$ language plpgsql;
+
+/* 
+ * fetch data for all proposals for computing samples
+ */
+
+create function MHSample_updateProposals () returns void as $$
+declare
+
+begin
+
+  -- TODO: generalize to more than one document
+  -- 2. find the samples that change doc_id from the previous world 
+  update proposals set prev_world = (select * from ie_lccrf_mcmcmh.getInitialWorld(doc_id)) where id=1;
+  update proposals set factors = (select * from ie_lccrf_mcmcmh.getFactors(doc_id)) where id=1;
+  update proposals set factor_lens = (select * from ie_lccrf_mcmcmh.getFactorLengths(doc_id)) where id=1;
+
+  update proposals S1 set prev_world = (select * from ie_lccrf_mcmcmh.getInitialWorld(S1.doc_id)) from proposals S2 where S1.doc_id != S2.doc_id and S1.id = S2.id+1;
+  -- Note: the following command is by far the most expensive when "context" switching
+  update proposals S1 set factors = (select * from ie_lccrf_mcmcmh.getFactors(S1.doc_id)) from proposals S2 where S1.doc_id != S2.doc_id and S1.id = S2.id+1;
+  update proposals S1 set factor_lens = (select * from ie_lccrf_mcmcmh.getFactorLengths(S1.doc_id)) from proposals S2 where S1.doc_id != S2.doc_id and S1.id = S2.id+1;
+
+end;
+$$ language plpgsql;
+create function MHSample_updateProposals (dom text) returns void as $$
+declare
+
+begin
+
+  execute 'set search_path to ' || $1;
+  perform ie_lccrf_mcmcmh.MHSample_updateProposals();
+
+end;
+$$ language plpgsql;
+
+/* 
+ * compute the MH samples
+ * by rejecting some of the proposals
+ */
+
+create function MHSample_genSamples () returns void as $$
+declare
+
+begin
+
+  insert into MHSamples
+  select world_id, doc_id, start_pos, seg_id, label 
+  from ( 
+-- TODO: world_id can be replaced by proposal.id+1
+  	select nextval('ie_lccrf_mcmcmh.world_id') world_id, doc_id, start_pos, seg_id, label, ie_lccrf_mcmcmh.getalpha_agg((doc_id, start_pos, label, 0.0, prev_world, factors, factor_lens)::ie_lccrf_mcmcmh.getalpha_io) over (order by id) alpha 
+  	from (select * from proposals order by id) foo) foo
+  where (foo.alpha).doc_id <> -1; 
+
+end;
+$$ language plpgsql;
+create function MHSample_genSamples (dom text) returns void as $$
+declare
+
+begin
+
+  execute 'set search_path to ' || $1;
+  perform ie_lccrf_mcmcmh.MHSample_genSamples();
+
+end;
+$$ language plpgsql;
+
+/* 
+ * MCMC Matropolis Hasting Sampling algorithm
+ * n is the number of samples
+ * 1) first world is initialized and inserted into O
+ * 2) the new worlds / deltas are inserted into O 
+ * Note: We do not implement the thining function here
+ */
+
+-- create function MHSample (n int, R probrel, O text) returns void as $$
+create function MHSample (n integer) returns void as $$
+declare
+
+begin
+
+	perform ie_lccrf_mcmcmh.MHSample_Init ();
+	perform ie_lccrf_mcmcmh.MHSample_genProposals ($1);
+	perform ie_lccrf_mcmcmh.MHSample_updateProposals ();
+	perform ie_lccrf_mcmcmh.MHSample_genSamples ();
+
+end;
+$$ language plpgsql;
+create function MHSample (dom text, n integer) returns void as $$
+declare
+
+begin
+
+	perform ie_lccrf_mcmcmh.MHSample_Init ($1);
+	perform ie_lccrf_mcmcmh.MHSample_genProposals ($1, $2);
+	perform ie_lccrf_mcmcmh.MHSample_updateProposals ($1);
+	perform ie_lccrf_mcmcmh.MHSample_genSamples ($1);
+
+end;
+$$ language plpgsql;
+
+-- get delta of pseudo-independent samples from mhsamples by thinning
+-- tf is the thining factor 
+create function getSamplesDelta(tf integer) returns table(world_id int, doc_id int, start_pos int, seg_id int, label int) as 
+$_$
+select 0 as world_id, doc_id, start_pos, seg_id, (label-1) as label
+from mhsamples
+where world_id=1
+union
+select (bundle_id+1) as world_id, doc_id, start_pos, seg_id, (label-1) as label 
+from (
+	select *, rank() over (partition by doc_id, start_pos, seg_id, bundle_id order by world_id desc) r
+	from (
+		select *, (world_id-2)/$1 bundle_id 
+		from mhsamples
+		where world_id>1) foo 
+	order by bundle_id, doc_id, start_pos) foo 
+where r<=1;
+$_$
+language SQL;
+
+-- TODO: SPJ over SamplesDelta
+
+-- get independent samples from mhsamples
+-- tf is the thining factor
+-- NOTE: different from getSamplesDelta
+--TODO: some of the worlds are not complete
+--TODO: need more debugging if to be used
+-- difference between 53 and 54, tmp and tmp1
+create function getSamples(tf integer, num_sample integer) returns table(world_id int, doc_id int, start_pos int, seg_id int, label int) as
+$_$
+-- compute the sample deltas
+with M as (
+ 	select * from ie_lccrf_mcmcmh.getSamplesDelta($1)),
+-- full sample structure
+X as ( 
+	select world_id, doc_id, start_pos, seg_id 
+	from (	select doc_id, start_pos, seg_id 
+		from segmenttbl) foo, 
+	     (	select generate_series as world_id 
+		from generate_series(0,$2/$1)) bar),
+-- fill in delta values into the full structure
+Y as (
+	select X.world_id world_id, M.world_id tmp_id, X.doc_id, X.start_pos, X.seg_id, M.label 
+	from X left join M on (X.doc_id = M.doc_id and X.start_pos = M.start_pos and X.world_id = M.world_id)),
+-- get all missing tuples from delta
+Z as (
+	select *, max(tmp_id) over (partition by doc_id, start_pos, seg_id order by world_id) r
+	from Y
+        order by world_id, doc_id, start_pos) 
+-- union the delta with missing values get full
+select * 
+from (
+	select foo.world_id::integer, foo.doc_id, foo.start_pos, foo.seg_id, z.label from (select * from z where label is null) foo, z where foo.r = z.world_id and foo.doc_id = z.doc_id and foo.start_pos=z.start_pos
+	union
+	select * from M) foo
+order by world_id, doc_id, start_pos;
+$_$
+language SQL;
+
+-------------------------------------------
+-- getSeqSamples_old 
+-- NOTE: single query version of getSeqSamples
+-- samples are taken independently 
+-- from each document in sequence of doc_id
+-- tf is the thinning factor
+-------------------------------------------
+
+create function getSeqSamples_old(tf integer, num_sample integer) returns table(world_id int, doc_id int, start_pos int, seg_id int, label int) as
+$_$
+-- compute the sample deltas
+with M as (
+ 	select * from ie_lccrf_mcmcmh.getSamplesDelta($1)),
+-- full sample structure
+X as ( 
+	select 0 as world_id, doc_id, start_pos, seg_id
+	from segmenttbl
+	union
+	select world_id, foo.doc_id, start_pos, seg_id 
+	from (	select doc_id, start_pos, seg_id 
+		from segmenttbl) foo, 
+	     (	select generate_series as world_id, ((generate_series-1)/($2/$1/(select count(*) from doc_id_tbl))+1) as doc_id 
+		from generate_series(1,$2/$1)) bar
+	where foo.doc_id = bar.doc_id
+),
+-- fill in delta values into the full structure
+Y as (
+	select X.world_id world_id, M.world_id tmp_id, X.doc_id, X.start_pos, X.seg_id, M.label 
+	from X left join M on (X.doc_id = M.doc_id and X.start_pos = M.start_pos and X.world_id = M.world_id)),
+-- get all missing tuples from delta
+Z as (
+	select *, max(tmp_id) over (partition by doc_id, start_pos, seg_id order by world_id) r
+	from Y
+        order by world_id, doc_id, start_pos) 
+-- union the delta with missing values get full
+select * 
+from (
+	select foo.world_id::integer, foo.doc_id, foo.start_pos, foo.seg_id, z.label from (select * from z where label is null) foo, z where foo.r = z.world_id and foo.doc_id = z.doc_id and foo.start_pos=z.start_pos
+	union
+	select * from M) foo
+order by world_id, doc_id, start_pos;
+$_$
+language SQL;
+
+-------------------------------------------
+-- getSeqSamples
+-- samples are taken independently 
+-- from each document in sequence of doc_id
+-- tf is the thinning factor
+-- NOTE: 
+-- 1. seems that making {m,x,y,z}
+-- temporary tables rather than views 
+-- in a single query is more efficient
+-- 2. cannot drop those tables inside the UDF
+-- because postgres follow pointers to the
+-- tables after planning 
+-- TODO:
+-- might be able to improve the efficiency
+-- by adding more indexes
+-------------------------------------------
+
+create function getSeqSamples(tf integer, num_sample integer) returns table(world_id int, doc_id int, start_pos int, seg_id int, label int) as
+$_$
+
+truncate m;
+truncate x;
+truncate y;
+truncate z;
+
+select ie_lccrf_mcmcmh.write_out('before m'); 
+select ie_lccrf_mcmcmh.write_out((select clock_timestamp()::text)); 
+-- compute the sample deltas
+	insert into m
+	select * from ie_lccrf_mcmcmh.getSamplesDelta($1);
+
+analyze segmenttbl;
+
+select ie_lccrf_mcmcmh.write_out('before x'); 
+select ie_lccrf_mcmcmh.write_out((select clock_timestamp()::text)); 
+-- full sample structure
+	insert into x
+	select 0 as world_id, doc_id, start_pos, seg_id 
+	from segmenttbl
+	union
+	select world_id, foo.doc_id, start_pos, seg_id 
+	from (	select doc_id, start_pos, seg_id 
+		from segmenttbl) foo, 
+	     (	select generate_series as world_id, ((generate_series-1)/($2/$1/(select count(*) from doc_id_tbl))+1) as doc_id 
+		from generate_series(1,$2/$1)) bar
+	where foo.doc_id = bar.doc_id;
+
+select ie_lccrf_mcmcmh.write_out('before y'); 
+select ie_lccrf_mcmcmh.write_out((select clock_timestamp()::text)); 
+-- fill in delta values into the full structure
+	insert into y
+	select X.world_id world_id, M.world_id tmp_id, X.doc_id, X.start_pos, X.seg_id, M.label 
+	from X left join M on (X.doc_id = M.doc_id and X.start_pos = M.start_pos and X.world_id = M.world_id);
+
+select ie_lccrf_mcmcmh.write_out('before z'); 
+select ie_lccrf_mcmcmh.write_out((select clock_timestamp()::text)); 
+-- get all missing tuples from delta
+	insert into z
+	select *, max(tmp_id) over (partition by doc_id, start_pos, seg_id order by world_id) r 
+	from Y
+        order by world_id, doc_id, start_pos;
+
+select ie_lccrf_mcmcmh.write_out('before final query'); 
+select ie_lccrf_mcmcmh.write_out((select clock_timestamp()::text)); 
+-- union the delta with missing values get full
+select * 
+from (
+	select foo.world_id::integer, foo.doc_id, foo.start_pos, foo.seg_id, z.label from (select * from z where label is null) foo, z where foo.r = z.world_id and foo.doc_id = z.doc_id and foo.start_pos=z.start_pos
+	union
+	select * from M) foo
+order by world_id, doc_id, start_pos;
+
+$_$ 
+language SQL;
+
+
+-- compute marginals distribution
+create function getMarginalDistribution(tf integer, num_sample integer) returns table(doc_id int, start_pos int, label int, count int) as
+$_$
+
+select doc_id, start_pos, label, count(*)::integer 
+from ie_lccrf_mcmcmh.getseqsamples($1, $2)
+group by doc_id, start_pos, label
+order by doc_id, start_pos, label;
+
+$_$
+language SQL;
+
+-- compute top-k marginal
+create function getTopkMarginal(tf integer, k integer, num_sample integer) returns table(doc_id int, start_pos int, label int, count int, rank int) as
+$_$
+
+select doc_id, start_pos, label, count::integer, rank::integer 
+from (
+	select doc_id, start_pos, label, count, row_number() over (partition by doc_id, start_pos order by count desc) rank 
+	from (
+		select doc_id, start_pos, label, count(*) 
+		from ie_lccrf_mcmcmh.getseqsamples($1, $3)
+		group by doc_id, start_pos, label) foo 
+	order by doc_id, start_pos, label) foo 
+where rank <= $2;
+
+$_$
+language SQL;
+
+-- compute joint extractions/worlds distribution
+create function getJointDistribution(tf integer, num_sample integer) returns table(doc_id int, world int[], count int) as
+$_$
+
+select * 
+from (
+    select doc_id, world, count(*)::integer
+    from (
+	select doc_id, array_agg(label) world
+	from ie_lccrf_mcmcmh.getseqsamples($1, $2)
+	group by world_id, doc_id) foo
+    group by doc_id, world) foo
+order by doc_id, count desc;
+
+$_$
+language SQL;
+
+-- compute top-k joint worlds
+-- Note: world is an integer array of labels indexed by doc_id and start_pos
+create function getTopkJoint(tf integer, k integer, num_sample integer) returns table(doc_id int, world int[], count int, rank int) as
+$_$
+
+select doc_id, world, count::integer, rank::integer 
+from (
+        select doc_id, world, count, row_number() over (partition by doc_id order by count desc) rank
+	from (
+		select doc_id, world, count(*)
+       		from (
+                	select doc_id, array_agg(label) world 
+                	from ie_lccrf_mcmcmh.getseqsamples($1, $3)
+                	group by doc_id, world_id) foo
+		group by doc_id, world) foo 
+	) foo
+where rank <= $2
+order by doc_id;
+
+$_$
+language SQL;
+
