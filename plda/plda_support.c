@@ -26,7 +26,45 @@ PG_FUNCTION_INFO_V1(setEle);
 PG_FUNCTION_INFO_V1(cword_count2);
 PG_FUNCTION_INFO_V1(sumArray);
 PG_FUNCTION_INFO_V1(randomAssignTopic_sub);
+PG_FUNCTION_INFO_V1(default_array);
 
+/**
+ * Returns an array of a given length filled with a certain given value.
+ */
+Datum default_array(PG_FUNCTION_ARGS);
+Datum default_array(PG_FUNCTION_ARGS)
+{
+	// int16 elemtyplen;
+	// bool elemtypbyval;
+	// char elemtypalign;
+	Datum * array;
+	int i;
+
+	ArrayType * pgarray;
+	int32 len = PG_GETARG_INT32(0);
+	int32 val = PG_GETARG_INT32(1);
+	/*
+	get_typlenbyvalalign(INT4OID,
+			     &elemtyplen,
+			     &elemtypbyval,
+			     &elemtypalign);
+	*/
+	array = palloc(len * sizeof(Datum));
+	for (i=0; i!=len; i++) array[i] = val;
+
+	// elog(NOTICE, "%lu %lu", sizeof(Datum), sizeof(int32));
+
+	// pgarray = construct_array(array, len, INT4OID, elemtyplen,
+	//			  elemtypbyval, elemtypalign);	
+	pgarray = construct_array(array, len, INT4OID, 4, true, 'i');
+
+	pfree(array);
+	PG_RETURN_ARRAYTYPE_P(pgarray);
+}
+
+/**
+ * Returns the size of a C-style 1d array
+ */
 Datum arr_size(PG_FUNCTION_ARGS);
 Datum arr_size(PG_FUNCTION_ARGS)
 {
@@ -253,7 +291,6 @@ static int32 sampleTopic
  * This function assigns a topic to each word in a document using the count
  * statistics obtained so far on the corpus.
  *
- * 
  */
 Datum randomAssignTopic_sub(PG_FUNCTION_ARGS);
 Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
@@ -303,14 +340,17 @@ Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
 		rtopic = sampleTopic(num_topics,widx,wtopic,global_count,
 				     topic_d,topic_counts,alpha,eta);
 
-		if (rtopic < 1 || rtopic > num_topics 
-		    || wtopic < 1 || wtopic > num_topics)
-			elog(ERROR, 
-			     "randomAssignTopic_sub: rtopic = %d wtopic = %d", rtopic, wtopic);
+		/* <randomAssignTopic_sub error checking> */
 
 		ret_topics[i] = rtopic;
 		ret_topic_d[rtopic-1]++; // adjust for 0-indexing
 	}
-
 	PG_RETURN_VOID();
 }
+
+/*
+ <randomAssignTopic_sub error checking>
+ if (rtopic < 1 || rtopic > num_topics || wtopic < 1 || wtopic > num_topics)
+     elog(ERROR, 
+	  "randomAssignTopic_sub: rtopic = %d wtopic = %d", rtopic, wtopic);
+ */

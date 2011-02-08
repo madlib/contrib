@@ -70,7 +70,7 @@ Here is the main learning function.
 -# As a first step, we need to prepare and populate two tables/views with the following 
    structure:
    \code   
-        madlib.corpus (       
+        madlib.lda_corpus (       
                 id         INT,    -- document ID
                 contents   INT[],  -- words in the document
 		topics     madlib.topics_t  -- topic assignment to words
@@ -83,7 +83,7 @@ Here is the main learning function.
 		a          TEXT[]  -- array of words in the dictionary
         );
    \endcode
-   The topics column of madlib.corpus can be left empty to begin with. 
+   The topics column of madlib.lda_corpus can be left empty to begin with. 
    The module comes with some randomly generated data. For example, we can import a 
    randomly generated list of documents using the command
    \code
@@ -94,27 +94,26 @@ Here is the main learning function.
    Python session:
    \code
         import plda
-        plda.plda_run(300,8,0.5,0.5,False)
+        plda.plda_run(100,8,0.5,0.5,False)
    \endcode
-   If the program terminates early with error from the GP Database, we can restart
-   the learning process where it terminated by running 
+   If the program terminates without converging to a good solution, we can restart 
+   the learning process where it terminated by running more iterations as follows: 
    \code
-        plda_run(300,8,0.5,0.5,True)
+        plda_run(200,8,0.5,0.5,True)
    \endcode
-   inside Python. This may be necessary a few times before the program can get through
-   all the sampling iterations.
+   This restarting process can be run multiple times.
 
 After a successful run of the plda_run() function, the results of learning can be
 obtained by running the following inside the Greenplum Database.
 
 -# The topic assignments for each document can be obtained as follows:
    \code
-	select id, (topics).topics from madlib.corpus;
+	select id, (topics).topics from madlib.lda_corpus;
    \endcode
 
 -# The number of times words in each document were assigned to each topic can be obtained as follows:
    \code
-	select id, (topics).topic_d from madlib.corpus;
+	select id, (topics).topic_d from madlib.lda_corpus;
    \endcode
 
 -# The number of times each word was assigned to a topic can be computed as follows:
@@ -124,7 +123,7 @@ obtained by running the following inside the Greenplum Database.
 
 -# The total number of words assigned to each topic can be computed as follows:
    \code
-	select sum((topics).topic_d) topic_sums from madlib.corpus;
+	select sum((topics).topic_d) topic_sums from madlib.lda_corpus;
    \endcode
 
 @literature
@@ -192,6 +191,7 @@ AS 'plda_support.so', 'setEle' LANGUAGE C STRICT;
 CREATE OR REPLACE FUNCTION madlib.arr_size(bytea) RETURNS int4
 AS 'plda_support.so', 'arr_size' LANGUAGE C STRICT;
 
+/*
 CREATE OR REPLACE FUNCTION madlib.default_array(d int4, ele int4, OUT ret int4[]) AS $$
 BEGIN
 	FOR i IN 1..d LOOP
@@ -199,6 +199,11 @@ BEGIN
 	END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+*/
+
+CREATE OR REPLACE FUNCTION 
+madlib.default_array(d int4, ele int4) RETURNS int4[] 
+AS 'plda_support.so', 'default_array' LANGUAGE C STRICT;
 
 -- Returns an array of random topic assignments for a given document length
 CREATE OR REPLACE FUNCTION 
@@ -401,7 +406,7 @@ $$ LANGUAGE plpgsql;
 --
 -- assignments - A list of length D, where each element of the list is an integer vector 
 --               giving the topic assignments to words in the corresponding document.
---  query: select id, (topics).topics from madlib.corpus ;
+--  query: select id, (topics).topics from madlib.lda_corpus ;
 --
 -- topics - A K x V matrix where each entry indicates the number of times a word (column)
 --          was assigned to a topic (row).
@@ -409,11 +414,11 @@ $$ LANGUAGE plpgsql;
 --
 -- topic_sums : A length K vector where each entry indicates the total number of times words
 --              were assigned to each topic.
---  query: select sum((topics).topic_d) topic_sums from madlib.corpus;
+--  query: select sum((topics).topic_d) topic_sums from madlib.lda_corpus;
 --
 -- document_sums : A K x D matrix where each entry is an integer indicating the number of 
 --                 times words in each document were assigned to each topic.
---  query: select id, (topics).topic_d from madlib.corpus;
+--  query: select id, (topics).topic_d from madlib.lda_corpus;
 -- 
 
 
