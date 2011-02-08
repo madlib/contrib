@@ -5,7 +5,7 @@ import plpy
 # representing a word. Word integers must start from 1.
 
 def plda_run(numiter, numtopics, alpha, eta, restart):
-    plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'gpadmin_pass')
+    plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'password')
     restartstep = 0
     if (restart == False):
         plpy.execute("SELECT setseed(0.5)")
@@ -35,5 +35,6 @@ def plda_run(numiter, numtopics, alpha, eta, restart):
             count = rv[j]['wcount']
             plpy.info( ' %d) %s   \t %f \t %d' % (j+1, word, prob, count));
 
-# plda_run(20,10,0.5,0.5,False)
+# Example usage
+# plda_run(10,2,0.5,0.5,False)
 

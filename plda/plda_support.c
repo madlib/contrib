@@ -26,39 +26,16 @@ PG_FUNCTION_INFO_V1(setEle);
 PG_FUNCTION_INFO_V1(cword_count2);
 PG_FUNCTION_INFO_V1(sumArray);
 PG_FUNCTION_INFO_V1(randomAssignTopic_sub);
-PG_FUNCTION_INFO_V1(default_array);
+PG_FUNCTION_INFO_V1(zero_array);
 
 /**
- * Returns an array of a given length filled with a certain given value.
+ * Returns an array of a given length filled with zeros
  */
-Datum default_array(PG_FUNCTION_ARGS);
-Datum default_array(PG_FUNCTION_ARGS)
+Datum zero_array(PG_FUNCTION_ARGS);
+Datum zero_array(PG_FUNCTION_ARGS)
 {
-	// int16 elemtyplen;
-	// bool elemtypbyval;
-	// char elemtypalign;
-	Datum * array;
-	int i;
-
-	ArrayType * pgarray;
 	int32 len = PG_GETARG_INT32(0);
-	int32 val = PG_GETARG_INT32(1);
-	/*
-	get_typlenbyvalalign(INT4OID,
-			     &elemtyplen,
-			     &elemtypbyval,
-			     &elemtypalign);
-	*/
-	array = palloc(len * sizeof(Datum));
-	for (i=0; i!=len; i++) array[i] = val;
-
-	// elog(NOTICE, "%lu %lu", sizeof(Datum), sizeof(int32));
-
-	// pgarray = construct_array(array, len, INT4OID, elemtyplen,
-	//			  elemtypbyval, elemtypalign);	
-	pgarray = construct_array(array, len, INT4OID, 4, true, 'i');
-
-	pfree(array);
+	ArrayType * pgarray = construct_array(NULL, len, INT4OID, 4, true, 'i');
 	PG_RETURN_ARRAYTYPE_P(pgarray);
 }
 

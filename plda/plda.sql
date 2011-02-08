@@ -144,8 +144,8 @@ obtained by running the following inside the Greenplum Database.
 -- \timing
 \i plda_drop.sql
 
-drop schema madlib cascade ;
-create schema madlib;
+-- drop schema madlib cascade ;
+-- create schema madlib;
 
 -- The topics_t data type store the assignment of topics to each word in a document,
 -- plus the distribution of those topics in the document.
@@ -202,8 +202,8 @@ $$ LANGUAGE plpgsql;
 */
 
 CREATE OR REPLACE FUNCTION 
-madlib.default_array(d int4, ele int4) RETURNS int4[] 
-AS 'plda_support.so', 'default_array' LANGUAGE C STRICT;
+madlib.zero_array(d int4) RETURNS int4[] 
+AS 'plda_support.so', 'zero_array' LANGUAGE C STRICT;
 
 -- Returns an array of random topic assignments for a given document length
 CREATE OR REPLACE FUNCTION 
@@ -247,8 +247,8 @@ DECLARE
 	rtopic int4;
 BEGIN
 	len := array_upper(doc,1);
-	ret.topics := madlib.default_array(len,0); 
-	ret.topic_d := madlib.default_array(num_topics,0); 
+	ret.topics := madlib.zero_array(len); 
+	ret.topic_d := madlib.zero_array(num_topics); 
 
 	PERFORM madlib.randomAssignTopic_sub(len,doc,doc_topics.topics,doc_topics.topic_d,
 			                   global_count,topic_counts,num_topics,
