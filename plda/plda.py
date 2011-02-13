@@ -4,8 +4,7 @@ import plpy
 # representing a word. Word integers must start from 1.
 
 def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
-    # plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'password')
-    plpy.connect('testdb', 'localhost', 5432, 'keesiongng', 'lib36514d')
+    plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'password')
     # plpy.execute('set client_min_messages=warning')
     restartstep = 0
     if (restart == False):
