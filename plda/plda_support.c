@@ -19,14 +19,9 @@
 PG_MODULE_MAGIC;
 
 /* Indicate "version 1" calling conventions for all exported functions. */
-PG_FUNCTION_INFO_V1(arr_size);
-PG_FUNCTION_INFO_V1(setup2dArray);
-PG_FUNCTION_INFO_V1(getEle);
-PG_FUNCTION_INFO_V1(setEle);
-PG_FUNCTION_INFO_V1(cword_count2);
-PG_FUNCTION_INFO_V1(sumArray);
 PG_FUNCTION_INFO_V1(randomAssignTopic_sub);
 PG_FUNCTION_INFO_V1(zero_array);
+PG_FUNCTION_INFO_V1(cword_count);
 
 /**
  * Returns an array of a given length filled with zeros
@@ -40,157 +35,43 @@ Datum zero_array(PG_FUNCTION_ARGS)
 }
 
 /**
- * Returns the size of a C-style 1d array
- */
-Datum arr_size(PG_FUNCTION_ARGS);
-Datum arr_size(PG_FUNCTION_ARGS)
-{
-	bytea * in = PG_GETARG_BYTEA_P(0);
-	int32 ret = (VARSIZE(in) - VARHDRSZ) / sizeof(int32);
-	PG_RETURN_INT32(ret);
-}
-
-/** 
- * Returns a C-style 1d array to represent a 2d array
- */
-Datum setup2dArray(PG_FUNCTION_ARGS);
-Datum setup2dArray(PG_FUNCTION_ARGS)
-{
-	int32 nwords = PG_GETARG_INT32(0);
-	int32 ntopics = PG_GETARG_INT32(1);
-	int32 bsize = VARHDRSZ + nwords * ntopics * sizeof(int32);
-	bytea * out = (bytea *)palloc0(bsize);
-
-	if (out == NULL)
-		elog(ERROR, "setup2dArray: failed to allocate enough memory");
-
-	SET_VARSIZE(out, bsize);
-	PG_RETURN_BYTEA_P(out);
-}
-
-/**
- * Returns a particular element in the input 2d array; indexing starts from 1.
- * The first index is the word index; the second, the topic index.
- */
-Datum getEle(PG_FUNCTION_ARGS);
-Datum getEle(PG_FUNCTION_ARGS)
-{
-	bytea * arr = PG_GETARG_BYTEA_P(0);
-	int32 i = PG_GETARG_INT32(1) - 1;
-	int32 j = PG_GETARG_INT32(2) - 1;
-	int32 ntopics = PG_GETARG_INT32(3);
-	int32 nwords = VARSIZE(arr) / (ntopics * sizeof(int32));
-	int32 * vals = (int32 *)VARDATA(arr);
-
-	if (i >= nwords || i < 0 || j >= ntopics || j < 0) 
-		elog(ERROR, "getEle: index out of bounds %d %d", i, j);
-
-	PG_RETURN_INT32(vals[i*ntopics + j]);
-}
-
-/**
- * Sets the value of a cell in the input 2d array; indexing starts from 1.
- * The first index is the word index; the second, the topic index.
+ * This function updates the word-topic count array given the assignment of
+ * topics to words in a document.
  *
- * Note: This function is destructive to the input 2d array and should be
- *       used with that in mind.
+ * Note: The function modifies the input word-topic count array, and can only 
+ * be used as part of the cword_agg() function.
  */
-Datum setEle(PG_FUNCTION_ARGS);
-Datum setEle(PG_FUNCTION_ARGS)
+Datum cword_count(PG_FUNCTION_ARGS);
+Datum cword_count(PG_FUNCTION_ARGS)
 {
-	bytea * arr = PG_GETARG_BYTEA_P(0);
-	int32 i = PG_GETARG_INT32(1) - 1;
-	int32 j = PG_GETARG_INT32(2) - 1;
-	int32 ntopics = PG_GETARG_INT32(3);
-	int32 newval = PG_GETARG_INT32(4);
+	ArrayType * count_arr, * doc_arr, * topics_arr;
+	int32 * count, * doc, * topics;
+	int32 doclen, num_topics, dsize, i;
 
-	int32 nwords = VARSIZE(arr) / (ntopics * sizeof(int32));
-	int32 * vals = (int32 *)VARDATA(arr);
+	doclen = PG_GETARG_INT32(3);
+	num_topics = PG_GETARG_INT32(4);
+	dsize = PG_GETARG_INT32(5);
 
-	if (i >= nwords || i < 0 || j >= ntopics || j < 0) 
-		elog(ERROR, "index out of bounds");
-
-	vals[i*ntopics + j] = newval;
-
-	PG_RETURN_VOID();
-}
-
-/**
- * This function updates the input word-topic 2d matrix given a document
- * and the topic assignments for each word in the document.
- *
- * NOTE: The function is destructive to the input word-topic matrix and
- *       should be used with this in mind.
- */
-Datum cword_count2(PG_FUNCTION_ARGS);
-Datum cword_count2(PG_FUNCTION_ARGS)
-{
-	int32 len = PG_GETARG_INT32(0);
-	ArrayType * arr1 = PG_GETARG_ARRAYTYPE_P(1);
-	int32 * doc = (int32 *)ARR_DATA_PTR(arr1);
-
-	ArrayType * arr2 = PG_GETARG_ARRAYTYPE_P(2);
-	int32 * topics = (int32 *)ARR_DATA_PTR(arr2);
-
-	bytea * arr3 = PG_GETARG_BYTEA_P(3);
-	int32 * wordTopicCounts = (int32 *)VARDATA(arr3);
-
-	int32 num_topics = PG_GETARG_INT32(4);
-	int32 i;
-	// int32 j;
-
-	/*
-	for (i=0; i!=len; i++)
-		if (doc[i] > 10001 || doc[i] < 0)
-			elog(ERROR, "doc[%d] = %d", i, doc[i]);
-
-	for (i=0; i!=len; i++)
-		if (topics[i] < 1 || topics[i] > num_topics)
-			elog(ERROR, "topics[%d] = %d", i, topics[i]);
-	
-	j = (VARSIZE(arr3) - VARHDRSZ) / sizeof(int32);
-	if (j != 786 * num_topics)
-		elog(ERROR, "%d != %d", j, 786 * num_topics);
-
-	for (i=0; i!=786 * num_topics; i++)
-		if (wordTopicCounts[i] < 0 || wordTopicCounts[i] > 1000000)
-			elog(ERROR, "wordTopicCounts[%d] = %d", i, wordTopicCounts[i]);
-	*/
-	for (i=0; i!=len; i++) {
-		/*
-		j = (doc[i]-1) * num_topics + (topics[i]-1);
-		if (j < 0 || j > 786 * num_topics)
-			elog(ERROR, "j = %d", j);
-		*/
-		wordTopicCounts[(doc[i]-1) * num_topics + (topics[i]-1)]++;
+	/* Construct a zero'd array at the first call of this function */
+	if (PG_ARGISNULL(0)) {
+		count_arr =
+		    construct_array(NULL,dsize*num_topics,INT4OID,4,true,'i');
+	} else {
+		count_arr = PG_GETARG_ARRAYTYPE_P(0);
 	}
-	// PG_RETURN_BYTEA_P(arr3);
-	PG_RETURN_VOID();
-}
+	count = (int32 *)ARR_DATA_PTR(count_arr);
+			
+	doc_arr = PG_GETARG_ARRAYTYPE_P(1);
+	doc = (int32 *)ARR_DATA_PTR(doc_arr);
 
-/**
- * This function adds two arrays together and stores the result in the 
- * first array.
- *
- * NOTE: This function is destructive to the first array and should be
- *       used with this in mind.
- */
-Datum sumArray(PG_FUNCTION_ARGS);
-Datum sumArray(PG_FUNCTION_ARGS)
-{
-	bytea * arr1 = PG_GETARG_BYTEA_P(0);
-	bytea * arr2 = PG_GETARG_BYTEA_P(1);
+	topics_arr = PG_GETARG_ARRAYTYPE_P(2);
+	topics = (int32 *)ARR_DATA_PTR(topics_arr);
 
-	int32 * gcount = (int32 *)VARDATA(arr1);
-	int32 * lcount = (int32 *)VARDATA(arr2);
+	/* Update the word-topic count */
+	for (i=0; i!=doclen; i++) 
+		count[(doc[i]-1) * num_topics + (topics[i]-1)]++;
 
-	int32 len = PG_GETARG_INT32(2);
-	int32 i;
-
-	for (i=0; i!=len; i++)
-		gcount[i] = gcount[i] + lcount[i];
-
-	PG_RETURN_VOID();
+	PG_RETURN_BYTEA_P(count_arr);
 }
 
 /**
@@ -266,8 +147,11 @@ static int32 sampleTopic
 
 /**
  * This function assigns a topic to each word in a document using the count
- * statistics obtained so far on the corpus.
- *
+ * statistics obtained so far on the corpus. The function returns an array
+ * of int4s, which pack two arrays together: the topic assignment to each
+ * word in the document (the first len elements in the returned array), and
+ * the number of words assigned to each topic (the last num_topics elements
+ * of the returned array).
  */
 Datum randomAssignTopic_sub(PG_FUNCTION_ARGS);
 Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
@@ -290,8 +174,8 @@ Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
 	int32 * topic_d = (int32 *)ARR_DATA_PTR(topic_d_arr);
 
 	// the word-topic count matrix
-	bytea * global_count_bytea = PG_GETARG_BYTEA_P(4);
-	int32 * global_count = (int32 *)VARDATA(global_count_bytea);
+	ArrayType * global_count_arr = PG_GETARG_ARRAYTYPE_P(4);
+	int32 * global_count = (int32 *)ARR_DATA_PTR(global_count_arr);
 
 	// total number of words assigned to each topic in the whole corpus
 	ArrayType * topic_counts_arr = PG_GETARG_ARRAYTYPE_P(5);
@@ -299,17 +183,13 @@ Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
 
 	int32 num_topics = PG_GETARG_INT32(6);
 
-	// the zero array for the new topic assignments to be returned
-	ArrayType * ret_topics_arr = PG_GETARG_ARRAYTYPE_P(7);
-	int32 * ret_topics = (int32 *)ARR_DATA_PTR(ret_topics_arr);
-
-	// the zero array for the new document topic distribution to be returned
-	ArrayType * ret_topic_d_arr = PG_GETARG_ARRAYTYPE_P(8);
-	int32 * ret_topic_d = (int32 *)ARR_DATA_PTR(ret_topic_d_arr);
-
 	// Dirichlet parameters
-	float8 alpha = PG_GETARG_FLOAT8(9);
-	float8 eta = PG_GETARG_FLOAT8(10);
+	float8 alpha = PG_GETARG_FLOAT8(7);
+	float8 eta = PG_GETARG_FLOAT8(8);
+
+	ArrayType * ret_arr = construct_array(NULL, len+num_topics, INT4OID, 4,
+					      true, 'i');
+	int32 * ret = (int32 *)ARR_DATA_PTR(ret_arr);
 
 	for (i=0; i!=len; i++) {
 		widx = doc[i];
@@ -317,17 +197,18 @@ Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
 		rtopic = sampleTopic(num_topics,widx,wtopic,global_count,
 				     topic_d,topic_counts,alpha,eta);
 
-		/* <randomAssignTopic_sub error checking> */
+		// <randomAssignTopic_sub error checking> 
 
-		ret_topics[i] = rtopic;
-		ret_topic_d[rtopic-1]++; // adjust for 0-indexing
+		ret[i] = rtopic;
+		ret[len-1+rtopic]++;
 	}
-	PG_RETURN_VOID();
+	PG_RETURN_ARRAYTYPE_P(ret_arr);
 }
-
 /*
  <randomAssignTopic_sub error checking>
  if (rtopic < 1 || rtopic > num_topics || wtopic < 1 || wtopic > num_topics)
      elog(ERROR, 
 	  "randomAssignTopic_sub: rtopic = %d wtopic = %d", rtopic, wtopic);
  */
+
+
