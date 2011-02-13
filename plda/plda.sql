@@ -71,6 +71,13 @@ Here is the main learning function.
    terminated inference run. The plda_run() function needs to be run from within
    Python.
 
+@installation
+   In the plda source directory, run the following commands:
+   \code
+   make install
+   psql db_name -f plda.sql
+   \endcode
+
 @examp
 
 -# As a first step, we need to prepare and populate two tables/views with the following 
