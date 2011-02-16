@@ -156,12 +156,6 @@ obtained by running the following inside the Greenplum Database.
 [4] http://en.wikipedia.org/wiki/Latent_Dirichlet_allocation
 */
 
-
--- \timing
-
--- drop schema madlib cascade ;
--- create schema madlib;
-
 \i plda_drop.sql
 
 -- The topics_t data type store the assignment of topics to each word in a document,
@@ -213,7 +207,7 @@ $$ LANGUAGE plpgsql;
 -- This function assigns a randomly chosen topic to each word in a document according to 
 -- the count statistics obtained for the document and the whole corpus so far. 
 CREATE OR REPLACE FUNCTION
-madlib.randomAssignTopic_sub(int4,int4[],int4[],int4[],int4[],int4[],int4,float,float) 
+madlib.randomAssignTopic_sub(int4,int4[],int4[],int4[],int4[],int4[],int4,int4,float,float) 
 RETURNS int4[]
 AS 'plda_support.so', 'randomAssignTopic_sub' LANGUAGE C STRICT;
 
@@ -228,7 +222,7 @@ AS 'plda_support.so', 'randomAssignTopic_sub' LANGUAGE C STRICT;
 --   alpha, eta   : the parameters of the Dirichlet distributions
 --
 CREATE OR REPLACE FUNCTION 
-madlib.randomAssignTopic(doc int4[], doc_topics madlib.topics_t, global_count int4[], topic_counts int4[], num_topics int4, alpha float, eta float)
+madlib.randomAssignTopic(doc int4[], doc_topics madlib.topics_t, global_count int4[], topic_counts int4[], num_topics int4, dsize int4, alpha float, eta float)
 RETURNS madlib.topics_t AS $$
 DECLARE
 	len int4;
@@ -238,7 +232,7 @@ BEGIN
 	ret.topics := madlib.randomAssignTopic_sub(len, doc, 
 		      				   doc_topics.topics, doc_topics.topic_d,
 				                   global_count, topic_counts, num_topics,
-						   alpha,eta);
+						   dsize, alpha,eta);
 	FOR i IN 1..num_topics LOOP
 	    ret.topic_d[i] := ret.topics[len+i];
 	    ret.topics[len+i] := NULL;
@@ -311,7 +305,7 @@ BEGIN
 	    iter := i + init_iter;
 	    RAISE NOTICE 'Starting iteration %', iter;
 	    -- Randomly reassign topics to the words in each document, in parallel; the map step
-	    UPDATE madlib.lda_corpus SET topics = madlib.randomAssignTopic(contents,topics,glwcounts,topic_counts,num_topics,alpha,eta) ;
+	    UPDATE madlib.lda_corpus SET topics = madlib.randomAssignTopic(contents,topics,glwcounts,topic_counts,num_topics,dsize,alpha,eta) ;
 
 	    -- UPDATE madlib.lda_corpus SET topics = madlib.randomAssignTopic(contents,topics,gcounts,topic_counts,num_topics,alpha,eta) FROM t WHERE t.id = madlib.lda_corpus.id;
 	    -- Compute the local word-topic counts in parallel; the map step
@@ -364,43 +358,6 @@ $$ LANGUAGE plpgsql;
 --                 times words in each document were assigned to each topic.
 --  query: select id, (topics).topic_d from madlib.lda_corpus;
 -- 
-
--- The main parallel LDA learning function, in python (half-finished)
-/*
-CREATE OR REPLACE FUNCTION madlib.plda_py(num_topics int4, num_iter int4, init_iter int4, alpha float, eta float) 
-RETURNS int4 AS $$	
-	rv = plpy.execute('SELECT SUM((topics).topic_d) tcount FROM madlib.lda_corpus')
-	topic_counts = rv[0]['tcount']
-	plpy.info('topic_counts = %s' % str(topic_counts))
-
-	rv = plpy.execute('SELECT madlib.dictsize() dsize')
-	dsize = rv[0]['dsize']
-	plpy.info('dsize = %d' % dsize)
-
-	rv = plpy.execute('SELECT count(*) temp FROM madlib.globalWordTopicCount WHERE mytimestamp = ' + str(init_iter))
-	temp = rv[0]['temp']
-	if temp == 1:
-	   plpy.info('Found global word-topic count from a previous call')
-	   rv = plpy.execute('SELECT gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ' + str(init_iter))
-	else:
-	   plpy.info('Initialising global word-topic count for the very first time')
-	   # rv = plpy.execute('SELECT madlib.setup2dArray(' + str(dsize) + ',' + str(num_topics) + ') gcounts')
-	   rv = plpy.execute('SELECT madlib.zero_array(' + str(dsize * num_topics) + ') gcounts')
-	glwcounts = rv[0]['gcounts']
-	# plpy.info('glwcounts = %s' % str(glwcounts))
-	plpy.execute('SELECT array_upper(''' + str(glwcounts) + ''')')
-
-	# plpy.execute('DELETE FROM madlib.localWordTopicCount')
-	# plpy.execute('DELETE FROM madlib.globalWordTopicCount')	
-
-	for i in range(1,num_iter):
-	    iter = i + init_iter
-	    plpy.info('Starting iteration %d' % iter)
-	    # plpy.execute('UPDATE madlib.lda_corpus SET topics = madlib.randomAssignTopic(contents,topics,gcounts,''' + str(topic_counts) + ''',' + str(num_topics) + ',' + str(alpha) + ',' + str(eta) + ')')
-
-	return 0
-$$ LANGUAGE plpythonu;
-*/
 
 CREATE OR REPLACE FUNCTION madlib.wordTopicDistrn(arr int4[], ntopics int4, word int4) 
 RETURNS int4[] 
@@ -539,90 +496,3 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-/*
-[Their LDA usage]
-As for the case of document analysis, the flow is like following.
-
-Japanese doc --> (Morphological Analysis)--> (some normalization)
---> LDA(In LDA, dimension compression will be done.)
-
-They have made parallelised "Morphological Analysis" and "normalization"
-already. So the only thing that they are not able to parallelise is LDA.
-
-And they told us that if your PLDA would be like following that would be
-nice.
-
-Input:
-- TABLE : (dimension number, word number) x (document number)
-   The value is 'count'.
-   <notice: Input data is often sparse, so generally it would be
-    "Incidence matrix" form>
-- the seed of random number
-   "Sensitive Dependence on Initial Conditions" is there.
-   So, hopefully, if we can specify seed, that would be great.
-- the number of class (topic )
-- the number of iteration
-- data set for training ( same form as the first one)
-
-Output:
-- model data
-    (word(dimension) number) x (class(topic) number)
-    The value is 'strength'.
-    In incidence matrix form,
-     model data(word int4,class int4[],value double precision[])
-
-- inference data
-    (document number) x (class(topic) number)
-    The value is 'strength'.
-    In incidence matrix form,
-     inference data(docID int4, class int4[], value double precision[])
-
-- the log likelihood variation x trial
-   (the number of trial) x (log likelihood)
-
-
-[Their answer for your questions]----
-* What's the size of the dictionary (i.e. unique number of words
-      in the corpus) the engineers at NTT are dealing with? Is it in
-      the thousands, tens of thousands?
-
-Their ans:
-This would be the number of dimension.
-In natural language, we think about 3million would be max.
-However, in our usage, there is the case from the hundreds to the thousands.
-
-* How many distinct documents are they analysing? What's the
-      average number of words in each document?
-
-Their ans:
-We assume the number of document would be very large.
-That would be from the millions to hundreds of millions.
-As to training set, from tens of thousands to hundreds of thousands
-would be ok.
-
-As to the average number of words in each document,
-it is case by case, however, those would be sparse.
-Because, basically, 3million word would not be filled.
-So you can think it is sparse.
-
-* Are the documents in Japanese or English?
-
-Their ans: Japanese
-
-* What's the current limitations of the R implementation? What's the
-      maximum number of documents they can analyse? How long does
-      that take?
-
-Their ans:
-R is not parallelised.
-As to max num of doc,
-the answer for this is the same as second question.
-The document which will be analyzed by LDA is 100% unique because
-(some normalization) does 'distinct'.
-------------------------------------------------------
-*/
-
-
-/*
-20,000 docs, 2 iterations, 3 topics: 8.5 s
-*/

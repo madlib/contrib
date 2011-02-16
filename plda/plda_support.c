@@ -12,6 +12,7 @@
 #include "fmgr.h"
 #include "catalog/pg_type.h"
 #include "utils/array.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include <stdlib.h>
 #include <assert.h>
@@ -30,7 +31,8 @@ Datum zero_array(PG_FUNCTION_ARGS);
 Datum zero_array(PG_FUNCTION_ARGS)
 {
 	int32 len = PG_GETARG_INT32(0);
-	ArrayType * pgarray = construct_array(NULL, len, INT4OID, 4, true, 'i');
+	Datum * array = palloc0(len * sizeof(Datum));
+	ArrayType * pgarray = construct_array(array, len, INT4OID, 4, true, 'i');
 	PG_RETURN_ARRAYTYPE_P(pgarray);
 }
 
@@ -47,6 +49,8 @@ Datum cword_count(PG_FUNCTION_ARGS)
 	ArrayType * count_arr, * doc_arr, * topics_arr;
 	int32 * count, * doc, * topics;
 	int32 doclen, num_topics, dsize, i;
+	Datum * array;
+	int32 idx;
 
 	doclen = PG_GETARG_INT32(3);
 	num_topics = PG_GETARG_INT32(4);
@@ -54,23 +58,42 @@ Datum cword_count(PG_FUNCTION_ARGS)
 
 	/* Construct a zero'd array at the first call of this function */
 	if (PG_ARGISNULL(0)) {
+		array = palloc0(dsize*num_topics*sizeof(Datum));
 		count_arr =
-		    construct_array(NULL,dsize*num_topics,INT4OID,4,true,'i');
+		    construct_array(array,dsize*num_topics,INT4OID,4,true,'i');
 	} else {
 		count_arr = PG_GETARG_ARRAYTYPE_P(0);
 	}
-	count = (int32 *)ARR_DATA_PTR(count_arr);
-			
 	doc_arr = PG_GETARG_ARRAYTYPE_P(1);
-	doc = (int32 *)ARR_DATA_PTR(doc_arr);
-
 	topics_arr = PG_GETARG_ARRAYTYPE_P(2);
+
+	/* Check that the input arrays are of the right dimension and type */
+	if (ARR_NDIM(count_arr) != 1 || ARR_ELEMTYPE(count_arr) != INT4OID ||
+	    ARR_NDIM(doc_arr) != 1 || ARR_ELEMTYPE(doc_arr) != INT4OID ||
+	    ARR_NDIM(topics_arr) != 1 || ARR_ELEMTYPE(topics_arr) != INT4OID)
+		ereport
+		 (ERROR,
+		  (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+		   errmsg("transition function \"%s\" called with invalid parameters",
+			  format_procedure(fcinfo->flinfo->fn_oid))));
+
+	count = (int32 *)ARR_DATA_PTR(count_arr);
+	doc = (int32 *)ARR_DATA_PTR(doc_arr);
 	topics = (int32 *)ARR_DATA_PTR(topics_arr);
 
 	/* Update the word-topic count */
-	for (i=0; i!=doclen; i++) 
-		count[(doc[i]-1) * num_topics + (topics[i]-1)]++;
+	for (i=0; i!=doclen; i++) {
+		idx = (doc[i]-1) * num_topics + (topics[i]-1);
 
+		if (idx < 0 || idx >= dsize*num_topics)
+			ereport
+			 (ERROR,
+			  (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+		           errmsg("function \"%s\" called with invalid parameters",
+				  format_procedure(fcinfo->flinfo->fn_oid))));
+		
+		count[idx]++;
+	}
 	PG_RETURN_BYTEA_P(count_arr);
 }
 
@@ -80,15 +103,14 @@ Datum cword_count(PG_FUNCTION_ARGS)
  * sampling inference algorithm for LDA. 
  * 
  * Parameters
- *  numtopics    : number of topics
- *  widx         : the index of the current word whose topic is to be sampled
- *  wtopic       : the current assigned topic of the word
- *  global_count : the word-topic count matrix
- *  local_d      : the distribution of topics in the current document
- *  topic_counts : the distribution of number of words in the corpus assigned 
- *                 to each topic
- *  alpha        : the Dirichlet parameter for the topic multinomial
- *  eta          : the Dirichlet parameter for the per-topic word multinomial
+ *  @param numtopics number of topics
+ *  @param widx the index of the current word whose topic is to be sampled
+ *  @param wtopic the current assigned topic of the word
+ *  @param global_count the word-topic count matrix
+ *  @param local_d the distribution of topics in the current document
+ *  @param topic_counts the distribution of number of words in the corpus assigned to each topic
+ *  @param alpha the Dirichlet parameter for the topic multinomial
+ *  @param eta the Dirichlet parameter for the per-topic word multinomial
  *
  * The function is non-destructive to all the input arguments.
  */
@@ -97,7 +119,6 @@ static int32 sampleTopic
     int32 * local_d, int32 * topic_counts, float8 alpha, float8 eta) 
 {
 	int32 j, glcount_temp, locald_temp, ret;
-
 	float8 r, cl_prob, total_unpr;
 
 	// this array captures the cumulative prob. distribution of the topics
@@ -161,38 +182,63 @@ Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
 	// length of document
 	int32 len = PG_GETARG_INT32(0);
 
-	// the document array
 	ArrayType * doc_arr = PG_GETARG_ARRAYTYPE_P(1);
+	ArrayType * topics_arr = PG_GETARG_ARRAYTYPE_P(2);
+	ArrayType * topic_d_arr = PG_GETARG_ARRAYTYPE_P(3);
+	ArrayType * global_count_arr = PG_GETARG_ARRAYTYPE_P(4);
+	ArrayType * topic_counts_arr = PG_GETARG_ARRAYTYPE_P(5);
+
+	if (ARR_NULLBITMAP(doc_arr) || ARR_NDIM(doc_arr) != 1 || 
+	    ARR_ELEMTYPE(doc_arr) != INT4OID ||
+	    ARR_NDIM(topics_arr) != 1 || ARR_ELEMTYPE(topics_arr) != INT4OID ||
+	    ARR_NULLBITMAP(topic_d_arr) || ARR_NDIM(topic_d_arr) != 1 || 
+	    ARR_ELEMTYPE(topic_d_arr) != INT4OID ||
+	    ARR_NULLBITMAP(global_count_arr) || ARR_NDIM(global_count_arr) != 1
+	    || ARR_ELEMTYPE(global_count_arr) != INT4OID ||
+	    ARR_NULLBITMAP(topic_counts_arr) || ARR_NDIM(topic_counts_arr) != 1
+	    || ARR_ELEMTYPE(topic_counts_arr) != INT4OID)
+		ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("function \"%s\" called with invalid parameters",
+				format_procedure(fcinfo->flinfo->fn_oid))));
+
+	// the document array
 	int32 * doc = (int32 *)ARR_DATA_PTR(doc_arr);
 
 	// array giving topic assignment to each word in document
-	ArrayType * topics_arr = PG_GETARG_ARRAYTYPE_P(2);
 	int32 * topics = (int32 *)ARR_DATA_PTR(topics_arr);
 
 	// distribution of topics in document
-	ArrayType * topic_d_arr = PG_GETARG_ARRAYTYPE_P(3);
 	int32 * topic_d = (int32 *)ARR_DATA_PTR(topic_d_arr);
 
 	// the word-topic count matrix
-	ArrayType * global_count_arr = PG_GETARG_ARRAYTYPE_P(4);
 	int32 * global_count = (int32 *)ARR_DATA_PTR(global_count_arr);
 
 	// total number of words assigned to each topic in the whole corpus
-	ArrayType * topic_counts_arr = PG_GETARG_ARRAYTYPE_P(5);
 	int32 * topic_counts = (int32 *)ARR_DATA_PTR(topic_counts_arr);
 
 	int32 num_topics = PG_GETARG_INT32(6);
+	int32 dsize = PG_GETARG_INT32(7);
 
 	// Dirichlet parameters
-	float8 alpha = PG_GETARG_FLOAT8(7);
-	float8 eta = PG_GETARG_FLOAT8(8);
+	float8 alpha = PG_GETARG_FLOAT8(8);
+	float8 eta = PG_GETARG_FLOAT8(9);
 
-	ArrayType * ret_arr = construct_array(NULL, len+num_topics, INT4OID, 4,
+	Datum * array = palloc0((len+num_topics) * sizeof(Datum));
+	ArrayType * ret_arr = construct_array(array, len+num_topics, INT4OID, 4,
 					      true, 'i');
 	int32 * ret = (int32 *)ARR_DATA_PTR(ret_arr);
 
 	for (i=0; i!=len; i++) {
 		widx = doc[i];
+
+		if (widx < 1 || widx > dsize)
+			ereport
+			 (ERROR,
+			  (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			   errmsg("function \"%s\" called with invalid parameters",
+				  format_procedure(fcinfo->flinfo->fn_oid))));
+
 		wtopic = topics[i];
 		rtopic = sampleTopic(num_topics,widx,wtopic,global_count,
 				     topic_d,topic_counts,alpha,eta);

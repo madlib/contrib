@@ -8,3 +8,4 @@ DROP TABLE IF EXISTS madlib.globalWordTopicCount CASCADE;
 -- DROP AGGREGATE IF EXISTS madlib.sum2darrays(madlib.global_counts, int, int);
 DROP TYPE IF EXISTS madlib.word_distrn CASCADE;
 DROP TYPE IF EXISTS madlib.word_weight CASCADE;
+
