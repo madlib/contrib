@@ -156,7 +156,7 @@ static int32 sampleTopic
 	r = (random() * 1.0) / RAND_MAX;
 	ret = 1;
 	while (true) {
-		if (r < topic_prs[ret-1]) break;
+		if (ret == numtopics || r < topic_prs[ret-1]) break;
 		ret++; 
 	}
 	if (ret < 1 || ret > numtopics)
