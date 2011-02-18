@@ -6,10 +6,12 @@ import plpy
 def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
     plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'password')
     # plpy.execute('set client_min_messages=warning')
+
     restartstep = 0
     if (restart == False):
         plpy.execute("SELECT setseed(0.5)")
         plpy.execute("DELETE FROM madlib.globalWordTopicCount")
+        
         plpy.info('Copying data into analysis table madlib.lda_corpus')
         plpy.execute("DELETE FROM madlib.lda_corpus")
         plpy.execute("VACUUM madlib.lda_corpus")
@@ -39,12 +41,14 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
 
     if leftover > 0:
         plpy.execute("select madlib.plda(" + str(numtopics) + "," + str(leftover) + "," + str(restartstep + numrounds*stepperround) + "," + str(alpha) + "," + str(eta) + ")")
-    plpy.info('Finished learning process')    
+
+    plpy.info('Finished learning process')            
 
     rv = plpy.execute("SELECT MAX(mytimestamp) FROM madlib.globalWordTopicCount");
     finalstep = rv[0]['max']    
     for i in range(1,numtopics+1):
-        rv = plpy.execute("select * from madlib.getImportantWords(" + str(finalstep) + "," + str(i) + "," + str(numtopics) + ") order by -prob")
+        # rv = plpy.execute("select * from madlib.getImportantWords(" + str(finalstep) + "," + str(i) + "," + str(numtopics) + ") order by -prob")
+        rv = plpy.execute("select * from madlib.topicWordProb(" + str(numtopics) + "," + str(i) + "," + str(finalstep) + ") order by -prob limit 20");
         plpy.info( 'Topic %d' % i)
         for j in range(0,min(len(rv),20)):
             word = rv[j]['word']
@@ -53,5 +57,5 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
             plpy.info( ' %d) %s   \t %f \t %d' % (j+1, word, prob, count));
 
 # Example usage
-# plda_run('mycorpus', 'mydict', 20,10,0.5,0.5,False)
+# plda_run('madlib.mycorpus', 'madlib.mydict', 50,9,0.5,0.5,False)
 
