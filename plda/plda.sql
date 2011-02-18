@@ -295,8 +295,6 @@ BEGIN
 	    glwcounts := madlib.zero_array(dsize * num_topics); 
 	END IF;
 
-	-- CREATE TEMPORARY TABLE t AS SELECT id, gcounts FROM madlib.lda_corpus, madlib.globalWordTopicCount WHERE mytimestamp = init_iter DISTRIBUTED BY (id);
-
 	-- Clear the local and global word-topic counts from the previous call
 	DELETE FROM madlib.localWordTopicCount;
 	DELETE FROM madlib.globalWordTopicCount;
@@ -307,7 +305,6 @@ BEGIN
 	    -- Randomly reassign topics to the words in each document, in parallel; the map step
 	    UPDATE madlib.lda_corpus SET topics = madlib.randomAssignTopic(contents,topics,glwcounts,topic_counts,num_topics,dsize,alpha,eta) ;
 
-	    -- UPDATE madlib.lda_corpus SET topics = madlib.randomAssignTopic(contents,topics,gcounts,topic_counts,num_topics,alpha,eta) FROM t WHERE t.id = madlib.lda_corpus.id;
 	    -- Compute the local word-topic counts in parallel; the map step
 	    INSERT INTO madlib.localWordTopicCount 
 	       (SELECT gp_segment_id,iter,
@@ -321,10 +318,7 @@ BEGIN
 
 	    SELECT INTO glwcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = iter;
 	    -- <<check glwcounts assignment>>
-/*
-	    DELETE FROM t;
-	    INSERT INTO t (SELECT id, gcounts FROM madlib.lda_corpus, madlib.globalWordTopicCount WHERE mytimestamp = iter);
-*/
+
 	    -- Compute the denominator
 	    SELECT INTO topic_counts SUM((topics).topic_d) FROM madlib.lda_corpus;
 
@@ -335,51 +329,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- After running plda(), here are the ways to compute the relevant return values from the 
--- corresponding R function 
---
--- D = number of documents
--- V = the size of the vocabulary
--- K = the number of topics
---
--- assignments - A list of length D, where each element of the list is an integer vector 
---               giving the topic assignments to words in the corresponding document.
---  query: select id, (topics).topics from madlib.lda_corpus ;
---
--- topics - A K x V matrix where each entry indicates the number of times a word (column)
---          was assigned to a topic (row).
---  query: select ss.i, madlib.wordTopicDistrn(gcounts,$numtopics,ss.i) from madlib.globalWordTopicCount, (select generate_series(1,$dictsize) i) as ss where mytimestamp = $num_iter ;
---
--- topic_sums : A length K vector where each entry indicates the total number of times words
---              were assigned to each topic.
---  query: select sum((topics).topic_d) topic_sums from madlib.lda_corpus;
---
--- document_sums : A K x D matrix where each entry is an integer indicating the number of 
---                 times words in each document were assigned to each topic.
---  query: select id, (topics).topic_d from madlib.lda_corpus;
--- 
-
-CREATE OR REPLACE FUNCTION madlib.wordTopicDistrn(arr int4[], ntopics int4, word int4) 
-RETURNS int4[] 
-AS $$
-DECLARE 
-	ret int4[];
-BEGIN
-	FOR i in 1..ntopics LOOP
-	    ret[i] := arr[(word-1)*ntopics + i]; 
-	END LOOP;
-	RETURN ret;
-END;
-$$ LANGUAGE plpgsql;
-
-
-/* -- check this against above result
+-- Returns the distribution of topics for a given word
 CREATE OR REPLACE FUNCTION madlib.wordTopicDistrn(arr int4[], ntopics int4, word int4, OUT ret int4[]) AS $$
        SELECT $1[(($3-1)*$2 + 1):(($3-1)*$2 + $2)];
 $$ LANGUAGE sql;
-*/
 
-CREATE TYPE madlib.word_distrn AS ( word text, distrn int4[] );
+CREATE TYPE madlib.word_distrn AS ( word text, distrn int4[], prob float8[] );
  
 -- Returns the word-topicDistribution pairs for each word in the dictionary
 CREATE OR REPLACE FUNCTION 
@@ -387,6 +342,7 @@ madlib.wordTopicDistributions( ltimestamp int4, num_topics int4)
 RETURNS SETOF madlib.word_distrn AS $$
 DECLARE
 	distrn INT4[];
+	prob FLOAT8[];
 	total INT4 := 0;
 	glbcounts int4[]; 
 	dict text[];
@@ -406,8 +362,15 @@ BEGIN
 	    	total := total + distrn[j];
 	    END LOOP;
 
+	    IF total = 0 THEN CONTINUE; END IF;
+
+	    FOR j IN 1..num_topics LOOP
+	    	prob[j] := distrn[j] * 1.0 / total;
+	    END LOOP;
+
 	    ret.word := dict[i];
 	    ret.distrn := distrn;
+	    ret.prob := prob;
 	    RETURN NEXT ret;
 
 	END LOOP;
@@ -416,7 +379,30 @@ $$ LANGUAGE plpgsql;
 
 CREATE TYPE madlib.word_weight AS ( word text, prob float, wcount int4 );
 
--- Returns the most important words for each topic
+-- Returns the Pr( word | topic )g
+CREATE OR REPLACE FUNCTION madlib.topicWordProb(num_topics int4, topic int4, ltimestamp int4) RETURNS SETOF madlib.word_weight AS $$
+DECLARE
+	glbcounts int4[];
+	topic_sum int4[];
+	dict text[];
+	dsize int4;
+	ret madlib.word_weight;
+BEGIN
+	SELECT INTO glbcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
+	SELECT INTO topic_sum sum((topics).topic_d) topic_sums FROM madlib.lda_corpus;
+	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
+	dsize := array_upper(dict,1);
+
+	FOR i IN 1..dsize LOOP
+	    ret.word := dict[i];
+	    ret.wcount := glbcounts[(i-1)*num_topics + topic];
+	    ret.prob := ret.wcount * 1.0 / topic_sum[topic];
+	    RETURN NEXT ret;
+	END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Returns the most important words for each topic, based on Pr( topic | word ).
 CREATE OR REPLACE FUNCTION 
 madlib.getImportantWords( ltimestamp int4, topicid int4, num_topics int4)
 RETURNS SETOF madlib.word_weight AS $$
@@ -438,23 +424,21 @@ BEGIN
 	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
 	dsize := array_upper(dict,1);
 
+	mincount = 10;	    
+	IF num_topics > mincount THEN mincount := num_topics; END IF;
+
 	FOR i IN 1..dsize LOOP
 	    total := 0;
 	    SELECT INTO distrn madlib.wordTopicDistrn(glbcounts,num_topics,i);
 	    FOR j IN 1..num_topics LOOP
 	    	total := total + distrn[j];
 	    END LOOP;
-	    IF total = 0 THEN 
-	        -- RAISE NOTICE 'Word % has zero count', i;
-	        CONTINUE; 
-	    END IF;
 
-	    mincount := 2;
-	    -- mincount := 10;
-	    IF num_topics > mincount THEN mincount := num_topics; END IF;
+	    IF total <= mincount THEN CONTINUE; END IF;
+
 	    wdprob := distrn[topicid] * 1.0 / total;
 
-	    IF total > mincount AND wdprob > 0 THEN
+	    IF total > mincount AND wdprob > 1.0/num_topics THEN
 	        ret.word := dict[i];
 		ret.prob := wdprob; 
 		ret.wcount := total;
@@ -464,6 +448,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+
+-- This function takes a fitted LDA model and computes a predictive distribution for new words in 
+-- a document.
+/*
 CREATE OR REPLACE FUNCTION 
 madlib.predictiveDistribution(docid int4, num_topics int4, last_iter int4, alpha float8, eta float8) 
 RETURNS SETOF madlib.word_weight AS $$
@@ -472,9 +460,11 @@ DECLARE
 	dict text[];
 	topic_distrn int4[];
 	distrn INT4[];
-	glwcounts INT4[]; -- bytea;
+	dtotal INT4 := 0;
+	glwcounts INT4[]; 
 	topic_sum INT4[];
 	word_prob float8;
+	prob float8;
 	ret madlib.word_weight;
 BEGIN
 	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
@@ -483,11 +473,15 @@ BEGIN
 	SELECT INTO topic_sum sum((topics).topic_d) topic_sums FROM madlib.lda_corpus;
 	SELECT INTO topic_distrn (topics).topic_d FROM madlib.lda_corpus WHERE id = docid;
 	
+	FOR j in 1..num_topics LOOP dtotal := dtotal + topic_distrn[j]; END LOOP; 
+
 	FOR j in 1..dsize LOOP
 	    word_prob := 0;
 	    FOR i in 1..num_topics LOOP
-		 word_prob := word_prob + (topic_distrn[i] + alpha) * 
-		 	      ((glwcounts[(j-1)*num_topics+i] * 1.0)/topic_sum[i] + eta); 
+	         prob := (topic_distrn[i]*1.0/dtotal + alpha) * -- Pr(i | docid)
+		 	 ((glwcounts[(j-1)*num_topics+i] * 1.0)/topic_sum[i] + eta); -- Pr(dict[j] | i)
+		 word_prob := word_prob + prob;
+		 RAISE NOTICE '% % % %', docid, j, i, prob;
 	    END LOOP;
 	    ret.word := dict[j];
 	    ret.prob := word_prob;
@@ -495,4 +489,4 @@ BEGIN
 	END LOOP;
 END;
 $$ LANGUAGE plpgsql;
-
+*/
