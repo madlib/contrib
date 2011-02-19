@@ -1,9 +1,30 @@
+"""
+@file plda.py
+
+@brief Parallel LDA: Driver function
+@author Kee Siong Ng
+
+Parallel LDA: Driver function
+"""
+
 import plpy
 
 # Each document is represented as an array of integers, with each integer
 # representing a word. Word integers must start from 1.
 
 def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
+    """
+    Executes the parallel LDA algorithm.
+
+    @param datatable Name of relation containing the input data points
+    @param dicttable Name of relation containing the alphabet dictionary
+    @param numiter   Number of iterations to run the Gibbs sampling
+    @param numtopics Number of topics to discover
+    @param alpha     Parameter of the Dirichlet distribution for document topic mixtures
+    @param eta       Parameter of the Dirichlet distribution for per-topic word distributions
+    @param restart   This is True if we want to continue from a previously terminated run
+    """
+
     plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'password')
     # plpy.execute('set client_min_messages=warning')
 
@@ -57,5 +78,5 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
             plpy.info( ' %d) %s   \t %f \t %d' % (j+1, word, prob, count));
 
 # Example usage
-# plda_run('madlib.mycorpus', 'madlib.mydict', 50,9,0.5,0.5,False)
+# plda_run('madlib.mycorpus', 'madlib.mydict', 20,9,0.5,0.5,False)
 
