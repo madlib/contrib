@@ -1,3 +1,12 @@
+"""
+@file plpy.py
+
+@brief Python functions to connect and interact with the database
+@author Aleksander Gorajek
+
+Python functions to connect and interact with the database
+"""
+
 # ==============================================================================
 # plpy.py
 #
