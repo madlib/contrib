@@ -5,6 +5,12 @@
  * @brief Support functions for Parallel Latent Dirichlet Allocation
  * @author Kee Siong Ng
  *
+ * This file is a subsidiary file to plda.sql, where we implement a few important
+ * UDFs in PL/C for efficiency reasons.
+ *
+ * Word-topic counts, which are 2 dimensional matrices, are implemented as a 
+ * one dimensional array using Postgres's internal ArrayType data structure.
+ *
  *//* ----------------------------------------------------------------------- */
 
 #include "postgres.h"
