@@ -7,5 +7,7 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 
 include $(PGXS)
 
+generateTestCases : generateTestCases.cc
+	g++ -Wall -O2 generateTestCases.cc -o generateTestCases
 
 
