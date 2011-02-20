@@ -15,6 +15,7 @@
 @addtogroup grp_lda
 
 @about
+\section about About
 
 Latent Dirichlet Allocation (LDA) is an interesting generative probabilistic 
 model for natural texts that has received a lot of attention in recent years. 
@@ -50,6 +51,8 @@ a straightforward parallelisation of the Gibbs sampling algorithm.
 See also http://code.google.com/p/plda/.
 
 @installation
+\section installation Installation
+
    To install the module, run the following command in the plda source directory to compile 
    the shared object file.
    \code
@@ -64,8 +67,13 @@ See also http://code.google.com/p/plda/.
    \code
    psql db_name -f plda.sql
    \endcode
+   To uninstall the parallel LDA module, we do this:
+   \code
+   psql db_name -f plda_drop.sql
+   \endcode
 
 @usage
+\section usage Application Interface
 
 This is the main learning function.
 
@@ -84,8 +92,13 @@ This is the main learning function.
    terminated inference run. The plda_run() function needs to be run from within
    Python.
 
+There is another function that will allow users to predict the labels of new documents using
+the LDA model learned from a training corpus. This has been written but is still subject to 
+further testing. This function, implemented as madlib.labelTestDocuments() in plda.sql, should 
+be used with caution for now.
 
 @examp
+\section example Example
 
 We now give a usage example.
 
@@ -97,12 +110,7 @@ We now give a usage example.
          contents   INT4[],  -- words in the document
 	 ....                -- other fields
    );
-   \endcode
-   and
-   \code
-   dictionary_table_name (
-	 a          TEXT[]  -- array of words in the dictionary
-   );
+   dictionary_table_name (  a TEXT[]  /* words in the dictionary */ );
    \endcode
    The module comes with some randomly generated data. For example, we can import two
    test tables madlib.mycorpus and madlib.mydict using the command
@@ -121,10 +129,7 @@ We now give a usage example.
    >>> plda.plda_run('madlib.mycorpus', 'madlib.mydict', 50,10,0.5,0.5,True)
    \endcode
    This restarting process can be run multiple times. 
--# Note that, at present, only one session of plda_run() should be executed in each
-   database. This is because each plda_run() stores its temporary learning data inside
-   the madlib.lda_corpus table, and multiple plda_run()'s will attempt to write to the
-   same table and thus corrupt the intermediate learning result.  
+
 
 After a successful run of the plda_run() function, the most probable words associated 
 with each topic are displayed. Other results of the learning process can be obtained 
@@ -134,11 +139,12 @@ by running the following commands inside the Greenplum Database.
    \code
    select id, (topics).topics from madlib.lda_corpus;
    \endcode
--# The number of times words in each document were assigned to each topic can be obtained as follows:
+-# The topic distribution of each document can be obtained as follows:
    \code
    select id, (topics).topic_d from madlib.lda_corpus;
    \endcode
--# The number of times each word was assigned to a topic can be computed as follows:
+-# The number of times each word was assigned to a given topic in the whole corpus can 
+   be computed as follows:
    \code
    select ss.i, madlib.wordTopicDistrn(gcounts,$numtopics,ss.i) 
    from madlib.globalWordTopicCount, 
@@ -147,12 +153,37 @@ by running the following commands inside the Greenplum Database.
    \endcode
    where $numtopics is the number of topics used in the learning process, and 
    $num_iter is the number of iterations ran in the learning process.
--# The total number of words assigned to each topic can be computed as follows:
+-# The total number of words assigned to each topic in the whole corpus can be computed 
+   as follows:
    \code
    select sum((topics).topic_d) topic_sums from madlib.lda_corpus;
    \endcode
 
+\section notes Additional Notes
+
+The input format for the Parallel LDA module is different from that used by the 
+`lda' package for R. In the `lda' package, each document is represented by two
+equal dimensional integer arrays. The first array represents the words the occur
+in the document, and the second array captures the number of times each word in
+the first array occurs in the document.
+This representation appears to have a major weakness in that all the occurrences
+of a word in a document must be assigned the same topic, which is clearly not
+satisfactory. Further, at the time of writing, the main learning function in the 
+`lda' package actually does not work correctly when the occurrence counts for words 
+aren't one.
+
+A major limitation of the module is that, at present, only one session of plda_run() 
+can be executed in each database. This is because each plda_run() stores its learning 
+result inside the madlib.lda_corpus table, and multiple plda_run()'s will attempt to 
+write to the same table and thus corrupt the intermediate learning result. This will
+be fixed in a future version.
+
+There is a script called generateTestCases.cc that can be used to generate some
+simple test documents to validate the correctness and effiency of the parallel
+LDA implementation.
+ 
 @literature
+\section literature Literature
 
 Here are some relevant references.
 
@@ -166,10 +197,13 @@ Here are some relevant references.
     Parallel Dirichlet Allocation for Large-scale Applications</em>, AAIM, 2009.
 
 [4] http://en.wikipedia.org/wiki/Latent_Dirichlet_allocation
+
+[5] J. Chang, Collapsed Gibbs sampling methods for topic models, R manual, 2010.
+
 */
 
 
-\i plda_drop.sql
+-- \i plda_drop.sql
 
 
 -- The topics_t data type store the assignment of topics to each word in a document,
