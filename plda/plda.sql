@@ -368,10 +368,16 @@ BEGIN
 	    	FROM madlib.localWordTopicCount WHERE mytimestamp = iter);
 
 	    SELECT INTO glwcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = iter;
+	    IF NOT FOUND THEN
+	       RAISE NOTICE 'Error: failed to retrieve gcounts for iteration %', iter;
+	    END IF;
 	    -- <<check glwcounts assignment>>
 
 	    -- Compute the denominator
 	    SELECT INTO topic_counts SUM((topics).topic_d) FROM madlib.lda_corpus;
+	    IF NOT FOUND THEN
+	       RAISE NOTICE 'Error: failed to compute topic_counts for iteration %', iter;
+	    END IF;
 
 	    RAISE NOTICE '  Done iteration %', iter;
    	END LOOP;
@@ -406,12 +412,21 @@ DECLARE
 	ret madlib.word_distrn;
 BEGIN
 	SELECT INTO glbcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'Error: failed to find gcounts for time step %', ltimestamp;
+	END IF;
 	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'Error: failed to find dictionary';
+	END IF;
 	dsize := array_upper(dict,1);
 
 	FOR i IN 1..dsize LOOP
 	    total := 0;
 	    SELECT INTO distrn madlib.wordTopicDistrn(glbcounts,num_topics,i);
+	    IF NOT FOUND THEN
+	       RAISE NOTICE 'Error: failed to find topic distribution for word %', i;
+	    END IF;
 	    FOR j IN 1..num_topics LOOP
 	    	total := total + distrn[j];
 	    END LOOP;
@@ -443,8 +458,17 @@ DECLARE
 	ret madlib.word_weight;
 BEGIN
 	SELECT INTO glbcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'Error: failed to find gcounts for time step %', ltimestamp;
+	END IF;
 	SELECT INTO topic_sum sum((topics).topic_d) topic_sums FROM madlib.lda_corpus;
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'Error: failed to compute topic_sum';
+	END IF;
 	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'Error: failed to find dictionary';
+	END IF;
 	dsize := array_upper(dict,1);
 
 	FOR i IN 1..dsize LOOP
@@ -476,6 +500,9 @@ BEGIN
 	END IF;
 
 	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'getImportantWords: dictionary not found';
+	END IF;
 	dsize := array_upper(dict,1);
 
 	mincount = 10;	    
@@ -484,6 +511,9 @@ BEGIN
 	FOR i IN 1..dsize LOOP
 	    total := 0;
 	    SELECT INTO distrn madlib.wordTopicDistrn(glbcounts,num_topics,i);
+	    IF NOT FOUND THEN
+	       RAISE NOTICE 'getImportantWords: topic distribution for word % not found', i;
+	    END IF;
 	    FOR j IN 1..num_topics LOOP
 	    	total := total + distrn[j];
 	    END LOOP;
@@ -531,7 +561,13 @@ DECLARE
 BEGIN
 	dsize := madlib.dictsize();
 	SELECT INTO glwcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestep;
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'labelTestDocuments: gcounts for time step % not found', ltimestep;
+	END IF;
 	SELECT INTO topic_counts SUM((topics).topic_d) FROM madlib.lda_corpus;
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'labelTestDocuments: failed to compute topic_counts';
+	END IF;
 
 	UPDATE madlib.lda_testcorpus 
 	SET topics = madlib.labelDocument(contents, glwcounts, topic_counts, num_topics, dsize,
