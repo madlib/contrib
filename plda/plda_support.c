@@ -184,6 +184,12 @@ Datum randomAssignTopic_sub(PG_FUNCTION_ARGS);
 Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
 {
 	int32 i, widx, wtopic, rtopic;
+	int32 * doc, * topics, * topic_d, * global_count, * topic_counts;
+	int32 num_topics, dsize;
+	float8 alpha, eta;
+	Datum * array;
+	ArrayType * ret_arr;
+	int32 * ret;
 
 	// length of document
 	int32 len = PG_GETARG_INT32(0);
@@ -209,31 +215,31 @@ Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
 				format_procedure(fcinfo->flinfo->fn_oid))));
 
 	// the document array
-	int32 * doc = (int32 *)ARR_DATA_PTR(doc_arr);
+	doc = (int32 *)ARR_DATA_PTR(doc_arr);
 
 	// array giving topic assignment to each word in document
-	int32 * topics = (int32 *)ARR_DATA_PTR(topics_arr);
+	topics = (int32 *)ARR_DATA_PTR(topics_arr);
 
 	// distribution of topics in document
-	int32 * topic_d = (int32 *)ARR_DATA_PTR(topic_d_arr);
+	topic_d = (int32 *)ARR_DATA_PTR(topic_d_arr);
 
 	// the word-topic count matrix
-	int32 * global_count = (int32 *)ARR_DATA_PTR(global_count_arr);
+	global_count = (int32 *)ARR_DATA_PTR(global_count_arr);
 
 	// total number of words assigned to each topic in the whole corpus
-	int32 * topic_counts = (int32 *)ARR_DATA_PTR(topic_counts_arr);
+	topic_counts = (int32 *)ARR_DATA_PTR(topic_counts_arr);
 
-	int32 num_topics = PG_GETARG_INT32(6);
-	int32 dsize = PG_GETARG_INT32(7);
+	num_topics = PG_GETARG_INT32(6);
+	dsize = PG_GETARG_INT32(7);
 
 	// Dirichlet parameters
-	float8 alpha = PG_GETARG_FLOAT8(8);
-	float8 eta = PG_GETARG_FLOAT8(9);
+	alpha = PG_GETARG_FLOAT8(8);
+	eta = PG_GETARG_FLOAT8(9);
 
-	Datum * array = palloc0((len+num_topics) * sizeof(Datum));
-	ArrayType * ret_arr = construct_array(array, len+num_topics, INT4OID, 4,
+	array = palloc0((len+num_topics) * sizeof(Datum));
+	ret_arr = construct_array(array, len+num_topics, INT4OID, 4,
 					      true, 'i');
-	int32 * ret = (int32 *)ARR_DATA_PTR(ret_arr);
+	ret = (int32 *)ARR_DATA_PTR(ret_arr);
 
 	for (i=0; i!=len; i++) {
 		widx = doc[i];
