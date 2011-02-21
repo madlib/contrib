@@ -51,7 +51,7 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
         restartstep = rv[0]['max']
         numiter = numiter - restartstep    
 
-    stepperround = 5
+    stepperround = 2
     numrounds = numiter / stepperround
     leftover = numiter % stepperround
 
@@ -59,6 +59,7 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
     for i in range(0,numrounds):
         plpy.execute("select madlib.plda(" + str(numtopics) + "," + str(stepperround) +"," + str(restartstep + i*stepperround) + "," + str(alpha) + "," + str(eta) + ")")
         plpy.info( 'Finished iteration %d' % (restartstep + (i+1)*stepperround))
+        plpy.execute("VACUUM madlib.lda_corpus")
 
     if leftover > 0:
         plpy.execute("select madlib.plda(" + str(numtopics) + "," + str(leftover) + "," + str(restartstep + numrounds*stepperround) + "," + str(alpha) + "," + str(eta) + ")")
@@ -78,5 +79,5 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
             plpy.info( ' %d) %s   \t %f \t %d' % (j+1, word, prob, count));
 
 # Example usage
-# plda_run('madlib.mycorpus', 'madlib.mydict', 20,9,0.5,0.5,False)
+# plda_run('madlib.mycorpus', 'madlib.mydict', 100,10,0.5,0.5,False)
 
