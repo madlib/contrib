@@ -340,7 +340,7 @@ BEGIN
 	SELECT INTO temp count(*) FROM madlib.globalWordTopicCount WHERE mytimestamp = init_iter;
 	IF temp = 1 THEN
 	    RAISE NOTICE 'Found global word-topic count from a previous call';
-	    SELECT INTO glwcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = init_iter;
+	    SELECT INTO glwcounts gcounts[1:dsize*num_topics] FROM madlib.globalWordTopicCount WHERE mytimestamp = init_iter;
 	    IF NOT FOUND THEN
 	       RAISE NOTICE 'Error: failed to retrieve gcounts for iteration %', init_iter;
 	    END IF;
@@ -370,7 +370,7 @@ BEGIN
 	       (SELECT iter, SUM(lcounts) 
 	    	FROM madlib.localWordTopicCount WHERE mytimestamp = iter);
 
-	    SELECT INTO glwcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = iter;
+	    SELECT INTO glwcounts gcounts[1:dsize*num_topics] FROM madlib.globalWordTopicCount WHERE mytimestamp = iter;
 	    IF NOT FOUND THEN
 	       RAISE NOTICE 'Error: failed to retrieve gcounts for iteration %', iter;
 	    END IF;
@@ -411,16 +411,17 @@ DECLARE
 	tempval float4;
 	ret madlib.word_distrn;
 BEGIN
-	SELECT INTO glbcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
-	IF NOT FOUND THEN
-	   RAISE NOTICE 'Error: failed to find gcounts for time step %', ltimestamp;
-	END IF;
 	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
 	IF NOT FOUND THEN
 	   RAISE NOTICE 'Error: failed to find dictionary';
 	END IF;
 	dsize := array_upper(dict,1);
 
+	SELECT INTO glbcounts gcounts[1:dsize*num_topics] FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'Error: failed to find gcounts for time step %', ltimestamp;
+	END IF;
+	
 	FOR i IN 1..dsize LOOP
 	    total := 0;
 	    SELECT INTO distrn madlib.wordTopicDistrn(glbcounts,num_topics,i);
@@ -457,7 +458,13 @@ DECLARE
 	dsize int4;
 	ret madlib.word_weight;
 BEGIN
-	SELECT INTO glbcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
+	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
+	IF NOT FOUND THEN
+	   RAISE NOTICE 'Error: failed to find dictionary';
+	END IF;
+	dsize := array_upper(dict,1);
+
+	SELECT INTO glbcounts gcounts[1:dsize*num_topics] FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
 	IF NOT FOUND THEN
 	   RAISE NOTICE 'Error: failed to find gcounts for time step %', ltimestamp;
 	END IF;
@@ -465,11 +472,7 @@ BEGIN
 	IF NOT FOUND THEN
 	   RAISE NOTICE 'Error: failed to compute topic_sum';
 	END IF;
-	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
-	IF NOT FOUND THEN
-	   RAISE NOTICE 'Error: failed to find dictionary';
-	END IF;
-	dsize := array_upper(dict,1);
+	
 
 	FOR i IN 1..dsize LOOP
 	    ret.word := dict[i];
@@ -494,16 +497,16 @@ DECLARE
 	ret madlib.word_weight;
 	mincount int4;
 BEGIN
-	SELECT INTO glbcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
-	IF glbcounts IS NULL THEN
-	   RAISE NOTICE 'getImportantWords: glbcounts = NULL';
-	END IF;
-
 	SELECT INTO dict a FROM madlib.lda_dict WHERE id = 1000000;
 	IF NOT FOUND THEN
 	   RAISE NOTICE 'getImportantWords: dictionary not found';
 	END IF;
 	dsize := array_upper(dict,1);
+
+	SELECT INTO glbcounts gcounts[1:dsize*num_topics] FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestamp; 
+	IF glbcounts IS NULL THEN
+	   RAISE NOTICE 'getImportantWords: glbcounts = NULL';
+	END IF;
 
 	mincount = 10;	    
 	IF num_topics > mincount THEN mincount := num_topics; END IF;
@@ -560,7 +563,7 @@ DECLARE
 	dsize int4;
 BEGIN
 	dsize := madlib.dictsize();
-	SELECT INTO glwcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestep;
+	SELECT INTO glwcounts gcounts[1:dsize*num_topics] FROM madlib.globalWordTopicCount WHERE mytimestamp = ltimestep;
 	IF NOT FOUND THEN
 	   RAISE NOTICE 'labelTestDocuments: gcounts for time step % not found', ltimestep;
 	END IF;
@@ -616,3 +619,4 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 */
+
