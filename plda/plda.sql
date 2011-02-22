@@ -278,16 +278,16 @@ RETURNS madlib.topics_t AS $$
 DECLARE
 	len int4;
 	ret madlib.topics_t;
+	temp int4[];
 BEGIN
 	len := array_upper(doc,1);
-	ret.topics := madlib.randomAssignTopic_sub(len, doc, 
-		      				   doc_topics.topics, doc_topics.topic_d,
-				                   global_count, topic_counts, num_topics,
-						   dsize, alpha,eta);
-	FOR i IN 1..num_topics LOOP
-	    ret.topic_d[i] := ret.topics[len+i];
-	    ret.topics[len+i] := NULL;
-	END LOOP;
+	temp := madlib.randomAssignTopic_sub(len, doc, 
+		      			     doc_topics.topics, doc_topics.topic_d,
+				             global_count, topic_counts, num_topics,
+				             dsize, alpha,eta);
+
+	ret.topics := temp[1:len];
+	ret.topic_d := temp[len+1:len+num_topics];
 					   
 	RETURN ret;
 END;
@@ -341,6 +341,9 @@ BEGIN
 	IF temp = 1 THEN
 	    RAISE NOTICE 'Found global word-topic count from a previous call';
 	    SELECT INTO glwcounts gcounts FROM madlib.globalWordTopicCount WHERE mytimestamp = init_iter;
+	    IF NOT FOUND THEN
+	       RAISE NOTICE 'Error: failed to retrieve gcounts for iteration %', init_iter;
+	    END IF;
         ELSE
 	    RAISE NOTICE 'Initialising global word-topic count for the very first time';
 	    glwcounts := madlib.zero_array(dsize * num_topics); 
@@ -381,9 +384,6 @@ BEGIN
 
 	    RAISE NOTICE '  Done iteration %', iter;
    	END LOOP;
-
-	-- Remove the trailing null's in the topics array
-	UPDATE madlib.lda_corpus SET topics.topics = (topics).topics[1:array_upper(contents,1)];
 
 	RETURN init_iter + num_iter;
 END;
