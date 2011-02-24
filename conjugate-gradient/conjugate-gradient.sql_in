@@ -75,36 +75,53 @@ declare
 	pAp_size FLOAT;
 	beta FLOAT;
 begin	
+	DROP TABLE IF EXISTS X_val;
+	CREATE TEMP TABLE X_val(
+		value FLOAT[]
+	) DISTRIBUTED RANDOMLY;
+	
+	DROP TABLE IF EXISTS P_val;
+	CREATE TEMP TABLE P_val(
+		value FLOAT[]
+	) DISTRIBUTED RANDOMLY; 
+	
 	SELECT INTO k array_upper(b,1);
-	SELECT INTO x ARRAY(SELECT random() FROM generate_series(1, k));
+	INSERT INTO X_val SELECT ARRAY(SELECT random() FROM generate_series(1, k));
 	LOOP
 		IF(iter%recidual_refresh = 0)THEN 
-			EXECUTE 'SELECT ARRAY(SELECT MADLIB_SCHEMA.array_dot('||val_id||', ARRAY[' || array_to_string(x,',') || ']) FROM '|| Matrix ||' ORDER BY '||row_id||' LIMIT '|| k ||')' INTO Ax;
+			EXECUTE 'SELECT ARRAY(SELECT array_dot('||val_id||', j.x) FROM (SELECT value AS x FROM X_val) AS j, '|| Matrix ||' ORDER BY '||row_id||' LIMIT '|| k ||')' INTO Ax;
 			SELECT INTO r array_sub(b, Ax);
 			SELECT INTO r_size array_dot(r, r);
 			RAISE INFO 'COMPUTE RESIDUAL ERROR %', r_size;
 			SELECT INTO p r; 
 		END IF;
 		iter = iter + 1;
-		EXECUTE 'SELECT ARRAY(SELECT MADLIB_SCHEMA.array_dot('||val_id||', ARRAY[' || array_to_string(p,',') || ']) FROM '|| Matrix ||' ORDER BY '||row_id||' LIMIT '|| k ||')' INTO Ap;
+		TRUNCATE TABLE P_val;
+		INSERT INTO P_val VALUES(p);
+		EXECUTE 'SELECT ARRAY(SELECT array_dot('||val_id||', j.p) FROM (SELECT value AS p FROM P_val) AS j,'|| Matrix ||' ORDER BY '||row_id||' LIMIT '|| k ||')' INTO Ap;
 		SELECT INTO pAp_size array_dot(p, Ap);
 		alpha = r_size/pAp_size;
-		SELECT INTO x MADLIB_SCHEMA.array_add(x, MADLIB_SCHEMA.array_scalar_mult(p,alpha));
-		SELECT INTO r MADLIB_SCHEMA.array_add(r, MADLIB_SCHEMA.array_scalar_mult(Ap, -alpha));
-		SELECT INTO r_new_size MADLIB_SCHEMA.array_dot(r,r);
+		
+		SELECT INTO x array_add(value, array_scalar_mult(p,alpha)) FROM X_val;
+		TRUNCATE TABLE X_val;
+		INSERT INTO X_val VALUES(x);
+		
+		SELECT INTO r array_add(r,array_scalar_mult(Ap, -alpha));
+		SELECT INTO r_new_size array_dot(r,r);
 		RAISE INFO 'ERROR %',r_new_size; 
 		IF (r_new_size < precision_limit) THEN
-			EXECUTE 'SELECT ARRAY(SELECT MADLIB_SCHEMA.array_dot('||val_id||', ARRAY[' || array_to_string(x,',') || ']) FROM '|| Matrix ||' ORDER BY '||row_id||' LIMIT '|| k ||')' INTO Ax;
-			SELECT INTO r MADLIB_SCHEMA.array_sub(b, Ax);
-			SELECT INTO r_new_size MADLIB_SCHEMA.array_dot(r, r);
+			EXECUTE 'SELECT ARRAY(SELECT array_dot('||val_id||', j.x) FROM (SELECT value AS x FROM X_val) AS j, '|| Matrix ||' ORDER BY '||row_id||' LIMIT '|| k ||')' INTO Ax;
+			SELECT INTO r array_sub(b, Ax);
+			SELECT INTO r_new_size array_dot(r, r);
 			RAISE INFO 'TEST FINAL ERROR %', r_new_size;
 			IF (r_new_size < precision_limit) THEN
 				EXIT;
 			END IF;
 		END IF;
-		SELECT INTO p MADLIB_SCHEMA.array_add(r, MADLIB_SCHEMA.array_scalar_mult(p, r_new_size/r_size));
+		SELECT INTO p array_add(r, array_scalar_mult(p, r_new_size/r_size));
 		r_size = r_new_size;
 	END LOOP; 
+	SELECT INTO x value FROM X_val;
 	RETURN x;
 end
 $$ LANGUAGE plpgsql;
