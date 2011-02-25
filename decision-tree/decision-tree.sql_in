@@ -109,7 +109,7 @@ begin
 		selection INTEGER
 	) DISTRIBUTED BY (selection);
 	
-	EXECUTE 'INSERT INTO MADLIB_SCHEMA.weighted_points SELECT (MADLIB_SCHEMA.CreateHash(id, feature, class)).* FROM (SELECT id, feature, class, hash(feature) as hash FROM '|| table_input ||') as A GROUP BY A.hash';
+	EXECUTE 'INSERT INTO MADLIB_SCHEMA.weighted_points SELECT (MADLIB_SCHEMA.CreateHash(id, feature, class)).* FROM (SELECT id, feature, class, MADLIB_SCHEMA.svec_hash(feature) as hash FROM '|| table_input ||') as A GROUP BY A.hash';
 end
 $$ language plpgsql;
 
