@@ -1,6 +1,6 @@
 PG_CONFIG = pg_config
 MODULE_big = viterbi
-DATA_built = viterbi_top1.sql viterbi.sql import_data.sql
+DATA_built = viterbi.sql import_data.sql
 SRCS = topk_array.c
 OBJS = $(SRCS:.c=.o)
 SHLIB_LINK = -lpq
