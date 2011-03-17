@@ -9,3 +9,4 @@ CREATE TABLE timeseries.moving_average_data
 ;
 
 \copy timeseries.moving_average_data FROM fake_data.csv WITH CSV HEADER
+
