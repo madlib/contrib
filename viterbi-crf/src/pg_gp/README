@@ -1,5 +1,4 @@
-Code donated by Daisy Wang, daisy@eecs.berkeley.edu, under the same BSD 
-License as MADlib.
+Code donated by Daisy Wang at Berkeley, under the same BSD License as MADlib.
 
 This code has not been tested by the MADlib team.  Due to the use of 
 WITH RECURSIVE, it currently requires PostgreSQL >= 8.4, and will not work 

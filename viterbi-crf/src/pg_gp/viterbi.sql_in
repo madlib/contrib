@@ -1,73 +1,149 @@
 --! \file viterbi.sql_in
 --!
 --! Instructions from Daisy Wang:
+--! * Setup the Viterbi UDF functions by calling viterbi.sql, which includes
+--!   the C and SQL UDF functions: <c>\i viterbi.sql</c>
 --! * Import the enron sample dataset (a small number of signatures from enron
 --!   email corpus) by calling import_data.sql: <c>\i import_data.sql</c>
---! * Setup the Viterbi UDF functions by calling viterbi.sql, which includes
---!   the C and SQL UDF functions: <c>\i setup_viterbi.sql</c>
 --! * Try it out!
 --! \code
---!   -- Compute the ML segmentation for the first document
---!       select MADLIB_SCHEMA.vcrf_top1(1);
---!       select * from display_u10;
---! 
---!       -- Compute the ML segmentation for the first 10 documents
---!       truncate table u10;
---!       select MADLIB_SCHEMA.vcrf_top1(doc_id) from doc_id_tbl where doc_id<11;
---!       select * from display_u10;
+--!   -- Compute the ML segmentation for all documents
+--!       select MADLIB_SCHEMA.vcrf_top1('MADLIB_SCHEMA.vcrf_segments',
+--!                               'MADLIB_SCHEMA.vcrf_factors',
+--!                               'MADLIB_SCHEMA.vcrf_labels',
+--!                               'MADLIB_SCHEMA.vcrf_u10', doc_id) 
+--!         from MADLIB_SCHEMA.vcrf_doc_ids;
+--!       select * from MADLIB_SCHEMA.vcrf_uview('MADLIB_SCHEMA.vcrf_u10');
+--!       select * from MADLIB_SCHEMA.vcrf_u10_display;
 --! \endcode
-}}}
 
-set search_path to enron,MADLIB_SCHEMA;
-drop table if exists segmenttbl CASCADE;
-drop table if exists labels CASCADE;
-drop table if exists doc_id CASCADE;
-drop table if exists segment_hashtbl CASCADE;
-drop table if exists mrtbl CASCADE;
-drop table if exists norm_factor_tbl CASCADE;
-drop table if exists u10 CASCADE;
+drop table if exists MADLIB_SCHEMA.vcrf_labels CASCADE;
+create table MADLIB_SCHEMA.vcrf_labels (id int, label text);
 
+drop table if exists MADLIB_SCHEMA.vcrf_segments CASCADE;
+create table MADLIB_SCHEMA.vcrf_segments (doc_id int, start_pos int, seg_id int);
 
-create table segmenttbl (doc_id int, start_pos int, seg_id int);
-create table labels (id int, label text);
-create table doc_id (doc_id int);
-create table segment_hashtbl (seg_text text, seg_id int);
-create table mrtbl (seg_id int, score int[]);
-create table norm_factor_tbl (doc_id int, norm_factor int);
-create table u10 (doc_id int, start_pos int, seg_id int, label int, score int);
+drop index if exists segments_doc_id_start_pos;
+create index segments_doc_id_start_pos on MADLIB_SCHEMA.vcrf_segments(doc_id, start_pos);
+  
+drop table if exists MADLIB_SCHEMA.vcrf_segment_lookup CASCADE;
+create table MADLIB_SCHEMA.vcrf_segment_lookup (seg_text text, seg_id int);  
+
+create or replace view MADLIB_SCHEMA.vcrf_display_segments as select doc_id, start_pos, seg_text from MADLIB_SCHEMA.vcrf_segments S, MADLIB_SCHEMA.vcrf_segment_lookup SH where S.seg_id=SH.seg_id;
+
+drop table if exists MADLIB_SCHEMA.vcrf_factors;
+create table MADLIB_SCHEMA.vcrf_factors (seg_id int, score integer[]);
+create index factors_seg_id on MADLIB_SCHEMA.vcrf_factors(seg_id);
+
+drop table if exists MADLIB_SCHEMA.vcrf_doc_ids;
+create table MADLIB_SCHEMA.vcrf_doc_ids (doc_id int);
+
+drop table if exists MADLIB_SCHEMA.vcrf_norm_factors CASCADE;
+create table MADLIB_SCHEMA.vcrf_norm_factors (doc_id int, norm_factor int);
+
+drop table if exists MADLIB_SCHEMA.vcrf_u10;
+create table MADLIB_SCHEMA.vcrf_u10 (doc_id integer, start_pos integer, seg_id integer, label integer, score integer);
 
 -- a human readable view of the u10 table
-create or replace view display_u10 as 
-  select u10.doc_id, start_pos, SH.seg_text, L.label,
-         (exp((u10.score - N.norm_factor)::float/1000)) as prob 
-    from u10, labels L, 
-         segment_hashtbl SH, norm_factor_tbl N 
-   where u10.seg_id=SH.seg_id and u10.label=L.id-1 and u10.doc_id=N.doc_id
-   order by doc_id, start_pos;
+-- XXX Still a hack due to explicit use of vcrf_labels, vcrf_seg_lookup, etc.
+create or replace function MADLIB_SCHEMA.vcrf_uview (tbl text) returns text AS
+$$ 
+query = 'create view ' + tbl + '_display AS ' + \
+'   select u10.doc_id, start_pos, SH.seg_text, L.label, ' + \
+'         (exp((u10.score - N.norm_factor)::float/1000)) as prob ' + \
+'    from ' + tbl + ' u10, MADLIB_SCHEMA.vcrf_labels L, ' + \
+'         MADLIB_SCHEMA.vcrf_segment_lookup SH, MADLIB_SCHEMA.vcrf_norm_factors N ' + \
+'   where u10.seg_id=SH.seg_id and u10.label=L.id-1 and u10.doc_id=N.doc_id' + \
+'   order by doc_id, start_pos;'
+plpy.execute(query)
+return tbl + '_display'
+$$ language plpythonu strict;
 
 -- create C-UDF functions for array manipulations
-drop function if exists MADLIB_SCHEMA.vcrf_max_top1_array(anyarray) cascade;
-create function MADLIB_SCHEMA.vcrf_max_top1_array(anyarray) 
+create or replace function MADLIB_SCHEMA.vcrf_max_top1_array(anyarray) 
 returns anyarray as 'MODULE_PATHNAME' language c strict;
 
-drop function if exists MADLIB_SCHEMA.vcrf_topk_array(anyarray, anyarray) cascade;
-create function MADLIB_SCHEMA.vcrf_topk_array(anyarray, anyarray) 
+create or replace function MADLIB_SCHEMA.vcrf_topk_array(anyarray, anyarray) 
 returns anyarray as 'MODULE_PATHNAME' language c strict; 
 
-drop function MADLIB_SCHEMA.vcrf_sum_array(anyarray, anyarray) cascade;
-create function MADLIB_SCHEMA.vcrf_sum_array(anyarray, anyarray) 
+create or replace function MADLIB_SCHEMA.vcrf_sum_array(anyarray, anyarray) 
 returns anyarray as 'MODULE_PATHNAME' language c strict;
 
-drop function MADLIB_SCHEMA.vcrf_sum(anyarray) cascade;
-create function MADLIB_SCHEMA.vcrf_sum(anyarray) 
+create or replace function MADLIB_SCHEMA.vcrf_sum(anyarray) 
 returns integer as 'MODULE_PATHNAME' language c strict;
 
--- -- create SQL-UDF function for Viterbi to compute ML segmentation  
--- \i viterbi_top1.sql
--- 
--- set search_path to enron;
--- 
--- select doc_id, MADLIB_SCHEMA.normalization(doc_id) as norm_factor into norm_factor_tbl from doc_id_tbl;
--- 
--- create index norm_factor_tbl_doc_id on norm_factor_tbl(doc_id);
+---------------------------------------------------------------
+-- UDF: normalization(segtbl, factortbl, docid int)
+-- usage: compute normalization factor for a given document
+-- input: doc_id
+-- output: normalization factor
+----------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.vcrf_normalization(segtbl text, factortbl text, docid int) RETURNS int AS
+$$
+query = 'WITH U11 AS (WITH RECURSIVE V (start_pos, score) AS (' + \
+  'SELECT segs.start_pos, factors.score[1:((SELECT count(*) FROM ' + \
+  'MADLIB_SCHEMA.vcrf_labels)::int)] ' + \
+  'FROM ' + segtbl + ' segs, ' + factortbl + ' factors ' + \
+  'WHERE segs.doc_id = ' + str(docid) + ' AND segs.start_pos = 0 AND ' + \
+  'factors.seg_id = segs.seg_id ' + \
+  'UNION ALL ' + \
+  'SELECT segs.start_pos, MADLIB_SCHEMA.vcrf_sum_array(v.score, factors.score) ' + \
+  'FROM ' + segtbl + ' segs, V, ' + factortbl + ' factors ' + \
+  'WHERE segs.doc_id = ' + str(docid) + ' AND segs.start_pos = v.start_pos+1 ' + \
+  'AND factors.seg_id = segs.seg_id) ' + \
+  'SELECT score FROM V WHERE start_pos = (SELECT MAX(start_pos) FROM V)) ' + \
+  'SELECT MADLIB_SCHEMA.vcrf_sum(score) FROM U11 AS return;'
+return plpy.execute(query)[0]['vcrf_sum'];
+$$ LANGUAGE plpythonu STRICT;
+
+--! \examp
+--! select normalization(doc_id) from doc_ids where doc_id=1;
+
+---------------------------------------------------------------------
+-- UDF: vcrf_top1(int)
+-- usage: compute top1 labelings for a document
+-- input: doc_id
+-- output: output file name
+-- side effect: insert into relation u10, containing top1 labelings
+---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.vcrf_top1(segtbl text, factortbl text, labeltbl text, resulttbl text, docid int) RETURNS text AS
+$$
+query = 'INSERT INTO ' + resulttbl + ' ' + \
+'WITH RECURSIVE L(start_pos,seg_id,score) AS ' + \
+'(SELECT * FROM (SELECT start_pos, seg_id, ' + \
+' MADLIB_SCHEMA.vcrf_max_top1_array(score) ' + \
+' FROM U11 ' + \
+' ORDER BY start_pos DESC LIMIT 1) K ' + \
+'UNION ALL ' + \
+'SELECT U11.start_pos, U11.seg_id, ' + \
+'       ARRAY[ [L.score[2][1]] ]  ' + \
+'        || ARRAY[ [U11.score[2][ L.score[2][1] + 1 ] ]] ' + \
+'          || ARRAY [ [L.score[3][1]] ] ' + \
+'     FROM U11, L ' + \
+'    WHERE U11.start_pos = L.start_pos - 1), ' + \
+'U11 AS ' + \
+'  (WITH RECURSIVE V (start_pos, seg_id, score) AS ' + \
+'    (SELECT st.start_pos, st.seg_id, ' + \
+'            factors.score[1:((SELECT COUNT(*) FROM ' + \
+labeltbl + ')::int)] ' + \
+'            || ARRAY[array_fill(-1,ARRAY[((SELECT COUNT(*) FROM ' + \
+labeltbl + ')::INT)]) ] ' + \
+'       FROM ' + segtbl + ' st, ' + factortbl + ' factors ' + \
+'      WHERE st.doc_id = ' + str(docid) + ' AND st.start_pos = 0 AND factors.seg_id = st.seg_id ' + \
+'    UNION ALL ' + \
+'    SELECT st.start_pos, st.seg_id, ' + \
+'           MADLIB_SCHEMA.vcrf_topk_array(v.score, factors.score) ' + \
+'      FROM ' + segtbl + ' st, V, ' + \
+'           ' + factortbl + ' factors ' + \
+'     WHERE st.doc_id = '+ str(docid) +' AND st.start_pos = v.start_pos+1 ' + \
+'       AND factors.seg_id = st.seg_id) ' + \
+'   SELECT * FROM V) ' + \
+'SELECT ' + str(docid) + ' AS doc_id, start_pos, seg_id, score[1][1], score [3][1] from L; '
+plpy.execute(query);
+return resulttbl;
+$$ LANGUAGE plpythonu STRICT;
+
+drop index if exists MADLIB_SCHEMA.vcrf_norm_factors_doc_id;
+create index norm_factors_doc_id on MADLIB_SCHEMA.vcrf_norm_factors(doc_id);
 
