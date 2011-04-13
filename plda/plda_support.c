@@ -28,6 +28,7 @@ PG_MODULE_MAGIC;
 
 /* Indicate "version 1" calling conventions for all exported functions. */
 PG_FUNCTION_INFO_V1(sampleNewTopics);
+PG_FUNCTION_INFO_V1(randomTopics);
 PG_FUNCTION_INFO_V1(zero_array);
 PG_FUNCTION_INFO_V1(cword_count);
 
@@ -292,4 +293,56 @@ Datum sampleNewTopics(PG_FUNCTION_ARGS)
      elog(ERROR, "sampleNewTopics: rtopic = %d wtopic = %d", rtopic, wtopic);
  */
 
+/**
+ * This function returns an array of random topic assignments for a given
+ * document length.
+ */
+Datum randomTopics(PG_FUNCTION_ARGS);
+Datum randomTopics(PG_FUNCTION_ARGS)
+{
+	int32 doclen = PG_GETARG_INT32(0);
+	int32 num_topics = PG_GETARG_INT32(1);
 
+	ArrayType * ret_topics_arr, * ret_topic_d_arr;
+	int32 * ret_topics, * ret_topic_d;
+
+	Datum * arr1 = palloc0(doclen * sizeof(Datum));
+	ret_topics_arr = construct_array(arr1,doclen,INT4OID,4,true,'i');
+	ret_topics = (int32 *)ARR_DATA_PTR(ret_topics_arr);
+
+	Datum * arr2 = palloc0(num_topics * sizeof(Datum));
+	ret_topic_d_arr = construct_array(arr2,num_topics,INT4OID,4,true,'i');
+	ret_topic_d = (int32 *)ARR_DATA_PTR(ret_topic_d_arr);
+
+	/* Sample topics */
+	int i, rtopic;
+	for (i=0; i!=doclen; i++) {
+		rtopic = random() % num_topics + 1;
+		ret_topics[i] = rtopic;
+		ret_topic_d[rtopic-1]++;
+	}
+	
+	/* Package up the return arrays */
+	Datum values[2];
+	values[0] = PointerGetDatum(ret_topics_arr);
+	values[1] = PointerGetDatum(ret_topic_d_arr);
+
+	TupleDesc tuple;
+	if (get_call_result_type(fcinfo, NULL, &tuple) != TYPEFUNC_COMPOSITE)
+		ereport(ERROR,
+			(errcode( ERRCODE_FEATURE_NOT_SUPPORTED ),
+			 errmsg( "function returning record called in context "
+				 "that cannot accept type record" )));
+	tuple = BlessTupleDesc(tuple);
+
+	bool * isnulls = palloc0(2 * sizeof(bool));
+	HeapTuple ret = heap_form_tuple(tuple, values, isnulls);
+
+	if (isnulls[0] || isnulls[1])
+		ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("function \"%s\" produced null results",
+				format_procedure(fcinfo->flinfo->fn_oid),i)));
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(ret));
+}

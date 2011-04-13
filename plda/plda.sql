@@ -110,7 +110,7 @@ We now give a usage example.
          contents   INT4[],  -- words in the document
 	 ....                -- other fields
    );
-   dictionary_table_name (  a TEXT[]  /* words in the dictionary */ );
+   dictionary_table_name ( a TEXT[] ); -- words in the dictionary 
    \endcode
    The module comes with some randomly generated data. For example, we can import two
    test tables madlib.mycorpus and madlib.mydict using the command
@@ -202,9 +202,7 @@ Here are some relevant references.
 
 */
 
-
 -- \i plda_drop.sql
-
 
 -- The topics_t data type store the assignment of topics to each word in a document,
 -- plus the distribution of those topics in the document.
@@ -237,22 +235,8 @@ CREATE OR REPLACE FUNCTION madlib.zero_array(d int4) RETURNS int4[]
 AS 'plda_support.so', 'zero_array' LANGUAGE C STRICT;
 
 -- Returns an array of random topic assignments for a given document length
-CREATE OR REPLACE FUNCTION 
-madlib.randomTopics(doclen int4, numtopics int4, OUT ret madlib.topics_t) AS $$
-DECLARE
-	rtopic INT4;			 
-BEGIN
-	ret.topic_d := madlib.zero_array(numtopics);
-	ret.topics := madlib.zero_array(doclen);
-
-	FOR i IN 1..doclen LOOP
-	    rtopic := trunc(random() * numtopics + 1);
-	    ret.topics[i] := rtopic;
-	    ret.topic_d[rtopic] := ret.topic_d[rtopic] + 1;
-	END LOOP;
-END;
-$$ LANGUAGE plpgsql;
-
+CREATE OR REPLACE FUNCTION madlib.randomTopics(doclen int4, numtopics int4) RETURNS madlib.topics_t 
+AS 'plda_support.so', 'randomTopics' LANGUAGE C STRICT;
 
 -- This function assigns a randomly chosen topic to each word in a document according to 
 -- the count statistics obtained for the document and the whole corpus so far. 
