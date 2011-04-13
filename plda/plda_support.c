@@ -20,18 +20,22 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "executor/executor.h"
 #include <stdlib.h>
 #include <assert.h>
 
 PG_MODULE_MAGIC;
 
 /* Indicate "version 1" calling conventions for all exported functions. */
-PG_FUNCTION_INFO_V1(randomAssignTopic_sub);
+PG_FUNCTION_INFO_V1(sampleNewTopics);
 PG_FUNCTION_INFO_V1(zero_array);
 PG_FUNCTION_INFO_V1(cword_count);
 
 /**
  * Returns an array of a given length filled with zeros
+ *
+ * This function can be further optimised, since we're effectively allocating
+ * the desired array twice, once in palloc0() and once in construct_array().
  */
 Datum zero_array(PG_FUNCTION_ARGS);
 Datum zero_array(PG_FUNCTION_ARGS)
@@ -57,6 +61,9 @@ Datum cword_count(PG_FUNCTION_ARGS)
 	int32 doclen, num_topics, dsize, i;
 	Datum * array;
 	int32 idx;
+
+	if (!(fcinfo->context && IsA(fcinfo->context, AggState)))
+		elog(ERROR, "cword_count not used as part of an aggregate");
 
 	doclen = PG_GETARG_INT32(3);
 	num_topics = PG_GETARG_INT32(4);
@@ -180,25 +187,20 @@ static int32 sampleTopic
  * the number of words assigned to each topic (the last num_topics elements
  * of the returned array).
  */
-Datum randomAssignTopic_sub(PG_FUNCTION_ARGS);
-Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
+Datum sampleNewTopics(PG_FUNCTION_ARGS);
+Datum sampleNewTopics(PG_FUNCTION_ARGS)
 {
 	int32 i, widx, wtopic, rtopic;
-	int32 * doc, * topics, * topic_d, * global_count, * topic_counts;
-	int32 num_topics, dsize;
-	float8 alpha, eta;
-	Datum * array;
-	ArrayType * ret_arr;
-	int32 * ret;
 
-	// length of document
-	int32 len = PG_GETARG_INT32(0);
-
-	ArrayType * doc_arr = PG_GETARG_ARRAYTYPE_P(1);
-	ArrayType * topics_arr = PG_GETARG_ARRAYTYPE_P(2);
-	ArrayType * topic_d_arr = PG_GETARG_ARRAYTYPE_P(3);
-	ArrayType * global_count_arr = PG_GETARG_ARRAYTYPE_P(4);
-	ArrayType * topic_counts_arr = PG_GETARG_ARRAYTYPE_P(5);
+	ArrayType * doc_arr = PG_GETARG_ARRAYTYPE_P(0);
+	ArrayType * topics_arr = PG_GETARG_ARRAYTYPE_P(1);
+	ArrayType * topic_d_arr = PG_GETARG_ARRAYTYPE_P(2);
+	ArrayType * global_count_arr = PG_GETARG_ARRAYTYPE_P(3);
+	ArrayType * topic_counts_arr = PG_GETARG_ARRAYTYPE_P(4);
+	int32 num_topics = PG_GETARG_INT32(5);
+	int32 dsize = PG_GETARG_INT32(6);
+	float8 alpha = PG_GETARG_FLOAT8(7);
+	float8 eta = PG_GETARG_FLOAT8(8);
 
 	if (ARR_NULLBITMAP(doc_arr) || ARR_NDIM(doc_arr) != 1 || 
 	    ARR_ELEMTYPE(doc_arr) != INT4OID ||
@@ -210,63 +212,84 @@ Datum randomAssignTopic_sub(PG_FUNCTION_ARGS)
 	    ARR_NULLBITMAP(topic_counts_arr) || ARR_NDIM(topic_counts_arr) != 1
 	    || ARR_ELEMTYPE(topic_counts_arr) != INT4OID)
 		ereport(ERROR,
-			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-			 errmsg("function \"%s\" called with invalid parameters",
-				format_procedure(fcinfo->flinfo->fn_oid))));
+		       (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			errmsg("function \"%s\" called with invalid parameters",
+			       format_procedure(fcinfo->flinfo->fn_oid))));
 
 	// the document array
-	doc = (int32 *)ARR_DATA_PTR(doc_arr);
+	int32 * doc = (int32 *)ARR_DATA_PTR(doc_arr);
+	int32 len = ARR_DIMS(doc_arr)[0];
 
 	// array giving topic assignment to each word in document
-	topics = (int32 *)ARR_DATA_PTR(topics_arr);
+	int32 * topics = (int32 *)ARR_DATA_PTR(topics_arr);
 
 	// distribution of topics in document
-	topic_d = (int32 *)ARR_DATA_PTR(topic_d_arr);
+	int32 * topic_d = (int32 *)ARR_DATA_PTR(topic_d_arr);
 
 	// the word-topic count matrix
-	global_count = (int32 *)ARR_DATA_PTR(global_count_arr);
+	int32 * global_count = (int32 *)ARR_DATA_PTR(global_count_arr);
 
 	// total number of words assigned to each topic in the whole corpus
-	topic_counts = (int32 *)ARR_DATA_PTR(topic_counts_arr);
+	int32 * topic_counts = (int32 *)ARR_DATA_PTR(topic_counts_arr);
 
-	num_topics = PG_GETARG_INT32(6);
-	dsize = PG_GETARG_INT32(7);
+	ArrayType * ret_topics_arr, * ret_topic_d_arr;
+	int32 * ret_topics, * ret_topic_d;
 
-	// Dirichlet parameters
-	alpha = PG_GETARG_FLOAT8(8);
-	eta = PG_GETARG_FLOAT8(9);
+	Datum * arr1 = palloc0(len * sizeof(Datum));
+	ret_topics_arr = construct_array(arr1,len,INT4OID,4,true,'i');
+	ret_topics = (int32 *)ARR_DATA_PTR(ret_topics_arr);
 
-	array = palloc0((len+num_topics) * sizeof(Datum));
-	ret_arr = construct_array(array, len+num_topics, INT4OID, 4,
-					      true, 'i');
-	ret = (int32 *)ARR_DATA_PTR(ret_arr);
+	Datum * arr2 = palloc0(num_topics * sizeof(Datum));
+	ret_topic_d_arr = construct_array(arr2,num_topics,INT4OID,4,true,'i');
+	ret_topic_d = (int32 *)ARR_DATA_PTR(ret_topic_d_arr);
 
 	for (i=0; i!=len; i++) {
 		widx = doc[i];
 
 		if (widx < 1 || widx > dsize)
-			ereport
-			 (ERROR,
-			  (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-			   errmsg("function \"%s\" called with invalid parameters",
-				  format_procedure(fcinfo->flinfo->fn_oid))));
+		     ereport
+		      (ERROR,
+		       (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			errmsg("function \"%s\" called with invalid parameters",
+			       format_procedure(fcinfo->flinfo->fn_oid))));
 
 		wtopic = topics[i];
 		rtopic = sampleTopic(num_topics,widx,wtopic,global_count,
 				     topic_d,topic_counts,alpha,eta);
 
-		// <randomAssignTopic_sub error checking> 
+		// <sampleNewTopics error checking> 
 
-		ret[i] = rtopic;
-		ret[len-1+rtopic]++;
+		ret_topics[i] = rtopic;
+		ret_topic_d[rtopic-1]++;
 	}
-	PG_RETURN_ARRAYTYPE_P(ret_arr);
+
+	Datum values[2];
+	values[0] = PointerGetDatum(ret_topics_arr);
+	values[1] = PointerGetDatum(ret_topic_d_arr);
+
+	TupleDesc tuple;
+	if (get_call_result_type(fcinfo, NULL, &tuple) != TYPEFUNC_COMPOSITE)
+		ereport(ERROR,
+			(errcode( ERRCODE_FEATURE_NOT_SUPPORTED ),
+			 errmsg( "function returning record called in context "
+				 "that cannot accept type record" )));
+	tuple = BlessTupleDesc(tuple);
+
+	bool * isnulls = palloc0(2 * sizeof(bool));
+	HeapTuple ret = heap_form_tuple(tuple, values, isnulls);
+
+	if (isnulls[0] || isnulls[1])
+		ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("function \"%s\" produced null results",
+				format_procedure(fcinfo->flinfo->fn_oid),i)));
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(ret));
 }
 /*
- <randomAssignTopic_sub error checking>
+ <sampleNewTopics error checking>
  if (rtopic < 1 || rtopic > num_topics || wtopic < 1 || wtopic > num_topics)
-     elog(ERROR, 
-	  "randomAssignTopic_sub: rtopic = %d wtopic = %d", rtopic, wtopic);
+     elog(ERROR, "sampleNewTopics: rtopic = %d wtopic = %d", rtopic, wtopic);
  */
 
 

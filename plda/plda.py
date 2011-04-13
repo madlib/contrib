@@ -26,26 +26,30 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
     """
 
     plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'password')
-    # plpy.execute('set client_min_messages=warning')
+    plpy.execute('set client_min_messages=info')
 
     restartstep = 0
     if (restart == False):
         plpy.execute("SELECT setseed(0.5)")
+        plpy.info('Removing old data from tables')
+        plpy.execute("DELETE FROM madlib.localWordTopicCount")
+        plpy.execute("VACUUM madlib.localWordTopicCount")
         plpy.execute("DELETE FROM madlib.globalWordTopicCount")
-        
-        plpy.info('Copying data into analysis table madlib.lda_corpus')
+        plpy.execute("VACUUM madlib.globalWordTopicCount")
         plpy.execute("DELETE FROM madlib.lda_corpus")
         plpy.execute("VACUUM madlib.lda_corpus")
+        plpy.execute("DELETE FROM madlib.lda_dict")
+        plpy.execute("VACUUM madlib.lda_dict")
+        plpy.info('  .... Done')
+        
+        plpy.info('Copying training data into tables madlib.lda_corpus and madlib.lda_dict')
         plpy.execute("INSERT INTO madlib.lda_corpus (SELECT id, contents FROM " + datatable + ")")
+        plpy.execute("INSERT INTO madlib.lda_dict (SELECT 1000000, dict FROM " + dicttable + " LIMIT 1)")
         plpy.info('  .... Done')
 
         plpy.info('Assigning initial random topics to documents in the corpus')
         plpy.execute("UPDATE madlib.lda_corpus SET topics = madlib.randomTopics(array_upper(contents,1)," + str(numtopics) + ")")
         plpy.info('  .... Done')
-
-        plpy.execute("DELETE FROM madlib.lda_dict")
-        plpy.execute("VACUUM madlib.lda_dict")
-        plpy.execute("INSERT INTO madlib.lda_dict (SELECT 1000000, dict FROM " + dicttable + " LIMIT 1)")
     else:
         rv = plpy.execute("SELECT MAX(mytimestamp) FROM madlib.globalWordTopicCount");
         restartstep = rv[0]['max']
@@ -57,6 +61,7 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
 
     plpy.info('Starting learning process')
     for i in range(0,numrounds):
+        plpy.info( 'Starting iteration')
         plpy.execute("select madlib.plda(" + str(numtopics) + "," + str(stepperround) +"," + str(restartstep + i*stepperround) + "," + str(alpha) + "," + str(eta) + ")")
         plpy.info( 'Finished iteration %d' % (restartstep + (i+1)*stepperround))
         plpy.execute("VACUUM madlib.lda_corpus")
@@ -79,5 +84,5 @@ def plda_run(datatable, dicttable, numiter, numtopics, alpha, eta, restart):
             plpy.info( ' %d) %s   \t %f \t %d' % (j+1, word, prob, count));
 
 # Example usage
-# plda_run('madlib.mycorpus', 'madlib.mydict', 100,10,0.5,0.5,False)
+plda_run('madlib.mycorpus', 'madlib.mydict', 30,10,0.5,0.5,False)
 

@@ -1,3 +1,5 @@
+override CFLAGS+=-std=gnu99
+
 SOURCES = plda_support.c
 OBJS = $(SOURCES:%.c=%.o)
 
