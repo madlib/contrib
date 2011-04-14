@@ -278,80 +278,61 @@ CREATE TABLE madlib.globalWordTopicCount ( mytimestamp int4, gcounts int4[] )
 DISTRIBUTED BY (mytimestamp); -- RANDOMLY;  
 
 -- The main parallel LDA learning function
-CREATE OR REPLACE FUNCTION 
+CREATE OR REPLACE FUNCTION
 madlib.plda(num_topics int4, num_iter int4, init_iter int4, alpha float, eta float) 
 RETURNS int4 AS $$
-DECLARE
-	dsize int4;           -- size of the dictionary
-	topic_counts int4[];  -- total number of words in each topic
-	glwcounts int4[];     -- global word-topic count
-	temp int4;
-	iter int4;
-BEGIN
-	SELECT INTO topic_counts SUM((topics).topic_d) FROM madlib.lda_corpus;
-	IF topic_counts IS NULL THEN
-	    RAISE NOTICE 'Error: topic_counts not initialised properly';
-	END IF;
+	topic_counts_t = plpy.execute("select sum((topics).topic_d) tc from madlib.lda_corpus");
+	if (topic_counts_t.nrows() == 0):
+	    plpy.error("error: topic_counts not initialised properly");
+	topic_counts = topic_counts_t[0]['tc'];
 
-	-- Get the dictionary
-	dsize := madlib.dictsize();
-	IF dsize = 0 OR dsize IS NULL THEN
-	    RAISE NOTICE 'Error: dictionary has not been initialised.';
-	END IF;
-	RAISE NOTICE 'dsize = %', dsize;
+	# Get dictionary size
+	dsize_t = plpy.execute("select array_upper(a,1) ds from madlib.lda_dict where id = 1000000");
+	if (dsize_t.nrows() == 0):
+	    plpy.error("error: dictionary has not been initialised");
+	dsize = dsize_t[0]['ds'];
+	plpy.info('dsize = %d' % dsize);
 
-	-- Get global word-topic counts computed from the previous call if available
-	SELECT INTO temp count(*) FROM madlib.globalWordTopicCount WHERE mytimestamp = init_iter;
-	IF temp = 1 THEN
-	    RAISE NOTICE 'Found global word-topic count from a previous call';
-	    SELECT INTO glwcounts gcounts[1:dsize*num_topics] FROM madlib.globalWordTopicCount WHERE mytimestamp = init_iter;
-	    IF NOT FOUND THEN
-	       RAISE NOTICE 'Error: failed to retrieve gcounts for iteration %', init_iter;
-	    END IF;
-        ELSE
-	    RAISE NOTICE 'Initialising global word-topic count for the very first time';
-	    glwcounts := madlib.zero_array(dsize * num_topics); 
-	END IF;
+	# Get global word-topic counts computed from the previous call if available
+	temp_t = plpy.execute("select count(*) temp from madlib.globalWordTopicCount where mytimestamp = " + str(init_iter));
+	temp = temp_t[0]['temp'];
 
-	-- Clear the local and global word-topic counts from the previous call
-	DELETE FROM madlib.localWordTopicCount;
-	DELETE FROM madlib.globalWordTopicCount;
+	if (temp == 1):
+	    plpy.info('Found global word-topic count from a previous call');
+	    glwcounts_t = plpy.execute("select gcounts[1:" + str(dsize*num_topics) + "] glwcounts from madlib.globalWordTopicCount where mytimestamp = " + str(init_iter));
+	    glwcounts = glwcounts_t[0]['glwcounts'];
+	else:
+	    plpy.info('Initialising global word-topic count for the very first time');
+	    glwcounts_t = plpy.execute("select madlib.zero_array(" + str(dsize*num_topics) + ") glwcounts");
+	    glwcounts = glwcounts_t[0]['glwcounts'];
 
-	FOR i in 1..num_iter LOOP
-	    iter := i + init_iter;
-	    RAISE NOTICE 'Starting iteration %', iter;
-	    -- Randomly reassign topics to the words in each document, in parallel; the map step
-	    UPDATE madlib.lda_corpus SET topics = madlib.sampleNewTopics(contents,(topics).topics,(topics).topic_d,glwcounts,topic_counts,num_topics,dsize,alpha,eta) ;
+	# Clear the local and global word-topic counts from the previous call    
+	plpy.execute('delete from madlib.localWordTopicCount');
+	plpy.execute('delete from madlib.globalWordTopicCount');
 
-	    -- Compute the local word-topic counts in parallel; the map step
-	    INSERT INTO madlib.localWordTopicCount 
-	       (SELECT gp_segment_id,iter,
-	       	       madlib.cword_agg(contents,(topics).topics,array_upper(contents,1),num_topics,dsize)
-    	   	FROM madlib.lda_corpus GROUP BY gp_segment_id);
+	for i in range(1,num_iter+1):
+	    iter = i + init_iter;
+	    plpy.info('Starting iteration %d' % iter);
+	    # Randomly reassign topics to the words in each document, in parallel; the map step
+	    plpy.execute("update madlib.lda_corpus set topics = madlib.sampleNewTopics(contents,(topics).topics,(topics).topic_d,'" + str(glwcounts) + "','" + str(topic_counts) + "'," + str(num_topics) + "," + str(dsize) + "," + str(alpha) + "," + str(eta) + ")");
+	    
+	    # Compute the local word-topic counts in parallel; the map step
+	    plpy.execute("insert into madlib.localWordTopicCount (select gp_segment_id, " + str(iter) + ", madlib.cword_agg(contents,(topics).topics,array_upper(contents,1)," + str(num_topics) + "," + str(dsize) + ") from madlib.lda_corpus group by gp_segment_id)");  
 
-	    -- Compute the global word-topic counts; the reduce step
-	    INSERT INTO madlib.globalWordTopicCount 
-	       (SELECT iter, SUM(lcounts) 
-	    	FROM madlib.localWordTopicCount WHERE mytimestamp = iter);
+	    # Compute the global word-topic counts; the reduce step
+	    plpy.execute("insert into madlib.globalWordTopicCount (select " + str(iter) + ", sum(lcounts) from madlib.localWordTopicCount where mytimestamp = " + str(iter) + ")");
+	    
+	    glwcounts_t = plpy.execute("select gcounts[1:" + str(dsize*num_topics) + "] glwcounts from madlib.globalWordTopicCount where mytimestamp = " + str(iter));
+	    glwcounts = glwcounts_t[0]['glwcounts'];
 
-	    SELECT INTO glwcounts gcounts[1:dsize*num_topics] FROM madlib.globalWordTopicCount WHERE mytimestamp = iter;
-	    IF NOT FOUND THEN
-	       RAISE NOTICE 'Error: failed to retrieve gcounts for iteration %', iter;
-	    END IF;
-	    -- <<check glwcounts assignment>>
+	    # Compute the denominator
+	    topic_counts_t = plpy.execute("select sum((topics).topic_d) tc from madlib.lda_corpus");
+	    topic_counts = topic_counts_t[0]['tc'];
 
-	    -- Compute the denominator
-	    SELECT INTO topic_counts SUM((topics).topic_d) FROM madlib.lda_corpus;
-	    IF NOT FOUND THEN
-	       RAISE NOTICE 'Error: failed to compute topic_counts for iteration %', iter;
-	    END IF;
+	    plpy.info('  Done iteration %d' % iter);
 
-	    RAISE NOTICE '  Done iteration %', iter;
-   	END LOOP;
-
-	RETURN init_iter + num_iter;
-END;
-$$ LANGUAGE plpgsql;
+	return init_iter + num_iter;   
+$$ LANGUAGE plpythonu;
 
 -- Returns the distribution of topics for a given word
 CREATE OR REPLACE FUNCTION madlib.wordTopicDistrn(arr int4[], ntopics int4, word int4, OUT ret int4[]) AS $$
@@ -512,7 +493,6 @@ BEGIN
 	FOR i in 1..20 LOOP
 	    ret := madlib.sampleNewTopics(doc,(ret).topics,(ret).topic_d,global_count,topic_counts,num_topics,dsize,alpha,eta);
     	END LOOP;
-	ret.topics := ret.topics[1:array_upper(doc,1)];
 	RETURN ret;
 END;
 $$ LANGUAGE plpgsql;
