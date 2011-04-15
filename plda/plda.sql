@@ -211,24 +211,8 @@ CREATE TYPE madlib.topics_t AS (
        topic_d int4[]
 );
 
--- The table where the corpus of documents to be analysed sits
-CREATE TABLE madlib.lda_corpus ( id int4, contents int4[], topics madlib.topics_t ) DISTRIBUTED RANDOMLY; -- BY (id);
-
 -- The table where the corpus of test documents to be labelled sits
-CREATE TABLE madlib.lda_testcorpus ( id int4, contents int4[], topics madlib.topics_t ) DISTRIBUTED RANDOMLY; -- BY (id);
-
--- The table for storing dictionary.
-CREATE TABLE madlib.lda_dict ( id int4, a text[] ) DISTRIBUTED RANDOMLY;
-
--- Returns the size of the dictionary
-CREATE OR REPLACE FUNCTION madlib.dictsize(OUT ret INT4) AS $$
-	SELECT array_upper(a,1) FROM madlib.lda_dict WHERE id = 1000000;
-$$ LANGUAGE sql;
-
--- Returns the word at a given index 
-CREATE OR REPLACE FUNCTION madlib.dict_word(idx int4, OUT ret text) AS $$
-	SELECT a[$1] FROM madlib.lda_dict WHERE id = 1000000;
-$$ LANGUAGE sql;
+-- CREATE TABLE madlib.lda_testcorpus ( id int4, contents int4[], topics madlib.topics_t ) DISTRIBUTED RANDOMLY; -- BY (id);
 
 -- Returns a zero'd array of a given dimension
 CREATE OR REPLACE FUNCTION madlib.zero_array(d int4) RETURNS int4[] 
@@ -271,19 +255,17 @@ CREATE AGGREGATE madlib.cword_agg(int4[], int4[], int4, int4, int4) (
 
 -- The main parallel LDA learning function
 CREATE OR REPLACE FUNCTION
-madlib.plda(num_topics int4, num_iter int4, init_iter int4, alpha float, eta float, local_word_topic_count text, model_table text) 
+madlib.plda(dsize int4, num_topics int4, num_iter int4, init_iter int4, alpha float, eta float, 
+	    local_word_topic_count text, model_table text, data_table text) 
 RETURNS int4 AS $$
-	topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM madlib.lda_corpus")
+	topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM " + data_table)
 	if (topic_counts_t.nrows() == 0):
 	    plpy.error("error: topic_counts not initialised properly")
 	topic_counts = topic_counts_t[0]['tc']
 
 	# -- Get dictionary size
-	dsize_t = plpy.execute("SELECT array_upper(a,1) ds FROM madlib.lda_dict WHERE id = 1000000")
-	if (dsize_t.nrows() == 0):
+	if (dsize == 0):
 	    plpy.error("error: dictionary has not been initialised")
-	dsize = dsize_t[0]['ds']
-	plpy.info('dsize = %d' % dsize)
 
 	# -- Get global word-topic counts computed FROM the previous call if available
 	temp_t = plpy.execute("SELECT count(*) temp FROM " + model_table + " WHERE mytimestamp = " + str(init_iter))
@@ -306,10 +288,10 @@ RETURNS int4 AS $$
 	    iter = i + init_iter
 	    plpy.info('Starting iteration %d' % iter)
 	    # Randomly reassign topics to the words in each document, in parallel; the map step
-	    plpy.execute("update madlib.lda_corpus set topics = madlib.sampleNewTopics(contents,(topics).topics,(topics).topic_d,'" + str(glwcounts) + "','" + str(topic_counts) + "'," + str(num_topics) + "," + str(dsize) + "," + str(alpha) + "," + str(eta) + ")")
+	    plpy.execute("UPDATE " + data_table + " SET topics = madlib.sampleNewTopics(contents,(topics).topics,(topics).topic_d,'" + str(glwcounts) + "','" + str(topic_counts) + "'," + str(num_topics) + "," + str(dsize) + "," + str(alpha) + "," + str(eta) + ")")
 	    
 	    # -- Compute the local word-topic counts in parallel; the map step
-	    plpy.execute("insert into " + local_word_topic_count + " (SELECT gp_segment_id, " + str(iter) + ", madlib.cword_agg(contents,(topics).topics,array_upper(contents,1)," + str(num_topics) + "," + str(dsize) + ") FROM madlib.lda_corpus GROUP BY gp_segment_id)")  
+	    plpy.execute("insert into " + local_word_topic_count + " (SELECT gp_segment_id, " + str(iter) + ", madlib.cword_agg(contents,(topics).topics,array_upper(contents,1)," + str(num_topics) + "," + str(dsize) + ") FROM " + data_table + " GROUP BY gp_segment_id)")  
 
 
 	    # -- Compute the global word-topic counts; the reduce step
@@ -319,7 +301,7 @@ RETURNS int4 AS $$
 	    glwcounts = glwcounts_t[0]['glwcounts']
 
 	    # Compute the denominator
-	    topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM madlib.lda_corpus")
+	    topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM " + data_table)
 	    topic_counts = topic_counts_t[0]['tc']
 
 	    plpy.info('  Done iteration %d' % iter)
@@ -331,12 +313,12 @@ CREATE TYPE madlib.word_weight AS ( word text, prob float, wcount int4 );
 
 -- Returns the most important words for each topic, base on Pr( word | topic ).
 CREATE OR REPLACE FUNCTION 
-madlib.topicWordProb(num_topics int4, mytopic int4, ltimestamp int4, model_table text) 
+madlib.topicWordProb(num_topics int4, mytopic int4, ltimestamp int4, model_table text, data_table text, dict_table text) 
 RETURNS SETOF madlib.word_weight AS $$
-       dict_t = plpy.execute("SELECT a FROM madlib.lda_dict WHERE id = 1000000")
+       dict_t = plpy.execute("SELECT dict FROM " + dict_table)
        if (dict_t.nrows() == 0):
        	   plpy.error("error: failed to find dictionary")
-       dict = dict_t[0]['a']
+       dict = dict_t[0]['dict']
        dict = map(int, dict[1:-1].split(',')) # -- convert string into array
        dsize = len(dict)
 
@@ -345,7 +327,7 @@ RETURNS SETOF madlib.word_weight AS $$
        	   plpy.error("error: failed to find gcounts for time step %d" % ltimestamp)
        glbcounts = glbcounts_t[0]['glbcounts']
 
-       topic_sum_t = plpy.execute("SELECT sum((topics).topic_d) topic_sum FROM madlib.lda_corpus")
+       topic_sum_t = plpy.execute("SELECT sum((topics).topic_d) topic_sum FROM " + data_table)
        if (topic_sum_t.nrows() == 0):
        	   plpy.error("error: failed to compute topic_sum")
        topic_sum = topic_sum_t[0]['topic_sum']
@@ -391,11 +373,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- This function computes the topic assignments to documents in a test corpus named madlib.lda_testcorpus
+-- This function computes the topic assignments to documents in a test corpus.
+-- The data_table argument appears unnecessary, as long as topic_counts is saved in a table from the plda() routine
 CREATE OR REPLACE FUNCTION
-madlib.labelTestDocuments(model_table text, ltimestep int4, num_topics int4, alpha float, eta float)
+madlib.labelTestDocuments(test_table text, model_table text, data_table text, dict_table text, ltimestep int4, num_topics int4, alpha float, eta float)
 RETURNS VOID AS $$
-	dsize_t = plpy.execute("SELECT madlib.dictsize()")
+	dsize_t = plpy.execute("SELECT array_upper(dict,1) dictsize FROM " + dict_table)
 	dsize = dsize_t[0]['dictsize']
         	
 	glwcounts_t = plpy.execute("SELECT gcounts[1:" + str(dsize*num_topics) + "] glwcounts FROM " + model_table + " WHERE mytimestamp = " + str(ltimestep))
@@ -403,12 +386,12 @@ RETURNS VOID AS $$
 	    plpy.error("error: gcounts for time step %d not found" % ltimestep)
 	glwcounts = glwcounts_t[0]['glwcounts']
 
-	topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM madlib.lda_corpus")
+	topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM " + data_table)
 	if (topic_counts_t.nrows() == 0):
 	    plpy.error("error: failed to compute topic_counts")
 	topic_counts = topic_counts_t[0]['tc']
 
-	plpy.execute("UPDATE madlib.lda_testcorpus SET topics = madlib.labelDocument(contents, '" + str(glwcounts) + "', '" + str(topic_counts) + "', " + str(num_topics) + ", " + str(dsize) + ", " + str(alpha) + ", " + str(eta) + ")")
+	plpy.execute("UPDATE " + test_table + " SET topics = madlib.labelDocument(contents, '" + str(glwcounts) + "', '" + str(topic_counts) + "', " + str(num_topics) + ", " + str(dsize) + ", " + str(alpha) + ", " + str(eta) + ")")
 		
 $$ LANGUAGE plpythonu;
 
