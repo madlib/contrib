@@ -78,7 +78,6 @@ def plda_run(datatable, dicttable, modeltable, numiter, numtopics, alpha, eta, r
     rv = plpy.execute("SELECT MAX(mytimestamp) FROM " + modeltable)
     finalstep = rv[0]['max']    
     for i in range(1,numtopics+1):
-        # rv = plpy.execute("select * from madlib.getImportantWords(" + str(finalstep) + "," + str(i) + "," + str(numtopics) + ") order by -prob")
         rv = plpy.execute("select * from madlib.topicWordProb(" + str(numtopics) + "," + str(i) + "," + str(finalstep) + ", '" + modeltable + "') order by -prob limit 20")
         plpy.info( 'Topic %d' % i)
         for j in range(0,min(len(rv),20)):
@@ -88,5 +87,16 @@ def plda_run(datatable, dicttable, modeltable, numiter, numtopics, alpha, eta, r
             plpy.info( ' %d) %s   \t %f \t %d' % (j+1, word, prob, count))
 
 # Example usage
-plda_run('madlib.mycorpus', 'madlib.mydict', 'madlib.lda_mymodel', 30,10,0.5,0.5,False)
+def plda_test():
+    plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'password')
+    plpy.execute('drop table madlib.lda_mymodel')
+    plpy.execute('delete from madlib.lda_testcorpus')
+    plpy.execute('insert into madlib.lda_testcorpus (select * from madlib.mycorpus limit 20)')
+    plda_run('madlib.mycorpus', 'madlib.mydict', 'madlib.lda_mymodel', 10,10,0.5,0.5,False)
+    plpy.execute("select madlib.labelTestDocuments('madlib.lda_mymodel', 10,10,0.5,0.5)")
+    plpy.execute("select * from madlib.lda_testcorpus")
+
+
+plda_test()
+
 
