@@ -9,6 +9,12 @@ Parallel LDA: Driver function
 
 import plpy
 
+# ----------------------------------------
+# Quotes a string to be used as a literal 
+# ----------------------------------------
+def quote_literal(val):
+    return "'" + val.replace("'", "''") + "'";
+
 # Each document is represented as an array of integers, with each integer
 # representing a word. Word integers must start from 1.
 
@@ -16,68 +22,93 @@ def plda_run(datatable, dicttable, modeltable, outputdatatable, numiter, numtopi
     """
     Executes the parallel LDA algorithm.
 
-    @param datatable  Name of table/view containing the input data points
-    @param dicttable  Name of table/view containing the alphabet dictionary
-    @param modeltable Name of table to store the word-topic counts
+    @param datatable       Name of table/view containing the input data points
+    @param dicttable       Name of table/view containing the alphabet dictionary
+    @param modeltable      Name of table to store the word-topic counts
     @param outputdatatable Name of table to store the topic assignments to each document in datatable
-    @param numiter    Number of iterations to run the Gibbs sampling
-    @param numtopics  Number of topics to discover
-    @param alpha      Parameter of the Dirichlet distribution for document topic mixtures
-    @param eta        Parameter of the Dirichlet distribution for per-topic word distributions
-    @param restart    This is True if we want to continue from a previously terminated run
+    @param numiter         Number of iterations to run the Gibbs sampling
+    @param numtopics       Number of topics to discover
+    @param alpha           Parameter of the Dirichlet distribution for document topic mixtures
+    @param eta             Parameter of the Dirichlet distribution for per-topic word distributions
+    @param restart         This is True if we want to continue from a previously terminated run
     """
 
     plpy.connect('testdb', 'localhost', 5432, 'gpadmin', 'password')
     # plpy.execute('set client_min_messages=info')
 
     # This stores the local word-topic counts computed at each segment 
-    plpy.execute('CREATE TEMP TABLE localWordTopicCount ( id int4, mytimestamp int4, lcounts int4[] ) DISTRIBUTED BY (mytimestamp)')
+    sql = '''CREATE TEMP TABLE localWordTopicCount ( id int4, mytimestamp int4, lcounts int4[] ) ''' + '''
+             DISTRIBUTED BY (mytimestamp)'''
+    plpy.execute(sql)
+
     # This stores the global word-topic counts
-    plpy.execute('CREATE TABLE ' + modeltable + ' ( mytimestamp int4, gcounts int4[] ) DISTRIBUTED BY (mytimestamp)')
+    sql = '''CREATE TABLE ''' + modeltable + ''' ( mytimestamp int4, gcounts int4[] ) ''' + '''
+             DISTRIBUTED BY (mytimestamp)'''
+    plpy.execute(sql)
+
     # This store a copy of the corpus of documents to be analysed
-    plpy.execute('CREATE TABLE ' + outputdatatable + ' ( id int4, contents int4[], topics madlib.topics_t ) DISTRIBUTED RANDOMLY')
+    sql = '''CREATE TABLE ''' + outputdatatable + ''' 
+             ( id int4, contents int4[], topics madlib.lda_topics_t ) DISTRIBUTED RANDOMLY'''
+    plpy.execute(sql)
 
     restartstep = 0
     if (restart == False):
         plpy.execute("SELECT setseed(0.5)")
         
-        plpy.info('Copying training data into tables ' + outputdatatable + ' and ' + dicttable)
-        plpy.execute("INSERT INTO " + outputdatatable + " (SELECT id, contents FROM " + datatable + ")")
+        plpy.info('Copying training data into tables ' + outputdatatable)
+        sql = '''INSERT INTO ''' + outputdatatable + ''' 
+                 (SELECT id, contents FROM ''' + datatable + ''')'''
+        plpy.execute(sql)
         plpy.info('  .... Done')
 
         plpy.info('Assigning initial random topics to documents in the corpus')
-        plpy.execute("UPDATE " + outputdatatable + " SET topics = madlib.randomTopics(array_upper(contents,1)," + str(numtopics) + ")")
+        sql = '''UPDATE ''' + outputdatatable + ''' 
+                 SET topics = madlib.lda_random_topics(array_upper(contents,1),''' + str(numtopics) + ''')'''
+        plpy.execute(sql)
         plpy.info('  .... Done')
     else:
         rv = plpy.execute("SELECT MAX(mytimestamp) FROM " + modeltable)
         restartstep = rv[0]['max']
         numiter = numiter - restartstep    
 
+    # Get number of words in dictionary    
     dsize_t = plpy.execute("SELECT array_upper(dict,1) dsize FROM " + dicttable)
     dsize = dsize_t[0]['dsize']
 
+    # The number of iterations to do per call to lda_train(); can increase to around 10
     stepperround = 2
     numrounds = numiter / stepperround
     leftover = numiter % stepperround
 
     plpy.info('Starting learning process')
     for i in range(0,numrounds):
-        plpy.info( 'Starting iteration')
-        plpy.execute("select madlib.plda(" + str(dsize) + "," + str(numtopics) + "," + str(stepperround) +"," + str(restartstep + i*stepperround) + "," + str(alpha) + "," + str(eta) + ", 'localWordTopicCount', '" + modeltable + "', '" + outputdatatable + "')")
-        plpy.info( 'Finished iteration %d' % (restartstep + (i+1)*stepperround))
+
+        plpy.execute("SELECT madlib.lda_train(" + str(dsize) + "," + str(numtopics) + "," 
+                               + str(stepperround) +"," + str(restartstep + i*stepperround) + "," 
+                               + str(alpha) + "," + str(eta) + ", 'localWordTopicCount', '" 
+                               + modeltable + "', '" + outputdatatable + "')")
+
+        plpy.info( '  ... finished iteration %d' % (restartstep + (i+1)*stepperround))
         plpy.execute("VACUUM " + outputdatatable)
 
     if leftover > 0:
-        plpy.execute("select madlib.plda(" + str(dsize) + "," + str(numtopics) + "," + str(leftover) + "," + str(restartstep + numrounds*stepperround) + "," + str(alpha) + "," + str(eta) + ", 'localWordTopicCount', '" + modeltable + "', '" + outputdatatable + "')")
 
-    plpy.info('Finished learning process')     
+        plpy.execute("SELECT madlib.lda_train(" + str(dsize) + "," + str(numtopics) + "," 
+                               + str(leftover) + "," + str(restartstep + numrounds*stepperround) + "," 
+                               + str(alpha) + "," + str(eta) + ", 'localWordTopicCount', '" 
+                               + modeltable + "', '" + outputdatatable + "')")
 
+    # Clean up    
+    last_iter = restartstep + numrounds*stepperround + leftover
+    plpy.execute("DELETE FROM " + modeltable + " WHERE mytimestamp < " + str(last_iter))
     plpy.execute('DROP TABLE localWordTopicCount')
 
-    rv = plpy.execute("SELECT MAX(mytimestamp) FROM " + modeltable)
-    finalstep = rv[0]['max']    
+    # Print the most probable words in each topic
     for i in range(1,numtopics+1):
-        rv = plpy.execute("select * from madlib.topicWordProb(" + str(numtopics) + "," + str(i) + "," + str(finalstep) + ", '" + modeltable + "', '" + outputdatatable + "', '" + dicttable + "') order by -prob limit 20")
+        rv = plpy.execute("select * from madlib.lda_topic_word_prob(" 
+                                            + str(numtopics) + "," + str(i) + "," + str(last_iter) 
+                                            + ", '" + modeltable + "', '" + outputdatatable + "', '" 
+                                            + dicttable + "') order by -prob limit 20")
         plpy.info( 'Topic %d' % i)
         for j in range(0,min(len(rv),20)):
             word = rv[j]['word']
@@ -91,10 +122,10 @@ def plda_test():
     plpy.execute('drop table if exists madlib.lda_mymodel')
     plpy.execute('drop table if exists madlib.lda_corpus')
     plpy.execute('drop table if exists madlib.lda_testcorpus')
-    plpy.execute('create table madlib.lda_testcorpus ( id int4, contents int4[], topics madlib.topics_t ) distributed randomly')
+    plpy.execute('create table madlib.lda_testcorpus ( id int4, contents int4[], topics madlib.lda_topics_t ) distributed randomly')
     plpy.execute('insert into madlib.lda_testcorpus (select * from madlib.mycorpus limit 20)')
-    plda_run('madlib.mycorpus', 'madlib.mydict', 'madlib.lda_mymodel', 'madlib.lda_corpus', 30,10,0.5,0.5,False)
-    plpy.execute("select madlib.labelTestDocuments('madlib.lda_testcorpus', 'madlib.lda_mymodel', 'madlib.lda_corpus', 'madlib.mydict', 30,10,0.5,0.5)")
+    plda_run('madlib.mycorpus', 'madlib.mydict', 'madlib.lda_mymodel', 'madlib.lda_corpus', 10,10,0.5,0.5,False)
+    plpy.execute("select madlib.lda_label_test_documents('madlib.lda_testcorpus', 'madlib.lda_mymodel', 'madlib.lda_corpus', 'madlib.mydict', 10,10,0.5,0.5)")
     plpy.execute("select * from madlib.lda_testcorpus")
 
 
