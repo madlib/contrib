@@ -123,9 +123,9 @@ def plda_test():
     plpy.execute('drop table if exists madlib.lda_corpus')
     plpy.execute('drop table if exists madlib.lda_testcorpus')
     plpy.execute('create table madlib.lda_testcorpus ( id int4, contents int4[], topics madlib.lda_topics_t ) distributed randomly')
-    plpy.execute('insert into madlib.lda_testcorpus (select * from madlib.mycorpus limit 20)')
-    plda_run('madlib.mycorpus', 'madlib.mydict', 'madlib.lda_mymodel', 'madlib.lda_corpus', 10,10,0.5,0.5,False)
-    plpy.execute("select madlib.lda_label_test_documents('madlib.lda_testcorpus', 'madlib.lda_mymodel', 'madlib.lda_corpus', 'madlib.mydict', 10,10,0.5,0.5)")
+    plpy.execute('insert into madlib.lda_testcorpus (select * from madlib.lda_mycorpus limit 20)')
+    plda_run('madlib.lda_mycorpus', 'madlib.lda_mydict', 'madlib.lda_mymodel', 'madlib.lda_corpus', 30,10,0.5,0.5,False)
+    plpy.execute("select madlib.lda_label_test_documents('madlib.lda_testcorpus', 'madlib.lda_mymodel', 'madlib.lda_corpus', 'madlib.lda_mydict', 30,10,0.5,0.5)")
     plpy.execute("select * from madlib.lda_testcorpus")
 
 

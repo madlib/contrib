@@ -79,22 +79,26 @@ This is the main learning function.
 
 -  Topic inference is achieved through the following Python function
    \code
-   plda_run(datatable, dicttable, numiter int, numtopics int, 
-            alpha float8, eta float8, restart bool),
+   plda_run(datatable, dicttable, modeltable, outputdatatable, 
+            numiter int, numtopics int, alpha float8, eta float8, 
+            restart bool),
    \endcode
    where datatable is the table where the corpus to be analysed is stored (the table is
    assumed to have the two columns: id int and contents int[]), dicttable is the table
    where the dictionary is stored (the table is assumed to have the column dict text[],
-   and contains only one row), numiter is the number of iterations to run the Gibbs sampling, 
+   and contain only one row), modeltable is the name of the table the system will store the
+   learned model (in the form of word-topic counts), outputdatatable is the name of the table
+   the system will store a copy of the datatable plus topic assignments to each document,
+   numiter is the number of iterations to run the Gibbs sampling, 
    numtopics is the number of topics to discover, alpha is the parameter to the topic Dirichlet
    prior, eta is the parameter to the Dirichlet prior on the per-topic word distributions,
-   and restart is a boolean value indicating whether we're restarting a previously
+   and restart is a boolean value indicating whether we are restarting a previously
    terminated inference run. The plda_run() function needs to be run from within
    Python.
 
 There is another function that will allow users to predict the labels of new documents using
-the LDA model learned from a training corpus. This has been written but is still subject to 
-further testing. This function, implemented as madlib.lda_label_test_documents() in plda.sql, should 
+the LDA model learned from a training corpus. This function, implemented as 
+madlib.lda_label_test_documents() in plda.sql, is still subject to further testing and is to 
 be used with caution for now.
 
 @examp
@@ -108,32 +112,44 @@ We now give a usage example.
    corpus_table_name (       
          id         INT4,    -- document ID
          contents   INT4[],  -- words in the document
-	 ....                -- other fields
+	 ...                 -- other fields
    );
-   dictionary_table_name ( a TEXT[] ); -- words in the dictionary 
+   dictionary_table_name ( 
+         dict       TEXT[],   -- words in the dictionary
+         ...                  -- other fields
+   );
    \endcode
+   Words must be represented using positive numbers.
    The module comes with some randomly generated data. For example, we can import two
-   test tables madlib.mycorpus and madlib.mydict using the command
+   test tables madlib.lda_mycorpus and madlib.lda_mydict using the command
    \code
    psql database_name -f importTestcases.sql
    \endcode     
--# We can now kick-start the inference process by running the following.
+-# To run the program, we need to call the plda_run() python function. The function 
+   plda_test() in plda.py contains an example of a call sequence. After making the 
+   necessary changes to the DB connection lines in plda.py for the appropriate username 
+   and password, and also the desired parameters for plda_run(), we can kick-start the 
+   inference process by running the following:
    \code
-   python
-   >>> import plda
-   >>> plda.plda_run('madlib.mycorpus', 'madlib.mydict', 20,10,0.5,0.5,False)
+   python plda.py
    \endcode
    If the program terminates without converging to a good solution, we can restart 
-   the learning process where it terminated by running more iterations as follows: 
+   the learning process where it terminated by executing the
+   plda_run() function again in Python, this time setting the restart parameter to True. 
+   For example,
    \code
-   >>> plda.plda_run('madlib.mycorpus', 'madlib.mydict', 50,10,0.5,0.5,True)
+   plda_run('madlib.lda_mycorpus', 'madlib.lda_mydict', 
+            'madlib.lda_mymodel', 'madlib.lda_corpus', 
+            50,10,0.5,0.5,True)
    \endcode
-   This restarting process can be run multiple times. 
+   This restarting process can be done multiple times. 
 
 
 After a successful run of the plda_run() function, the most probable words associated 
 with each topic are displayed. Other results of the learning process can be obtained 
-by running the following commands inside the Greenplum Database.
+by running the following commands inside the Greenplum Database. Here we  assume
+the modeltable and outputdatatable parameters to plda_run() are 'madlib.lda_mymodel'
+and 'madlib.lda_corpus' respectively.
 
 -# The topic assignments for each document can be obtained as follows:
    \code
@@ -147,12 +163,11 @@ by running the following commands inside the Greenplum Database.
    be computed as follows:
    \code
    select ss.i, madlib.lda_word_topic_distrn(gcounts,$numtopics,ss.i) 
-   from madlib.globalWordTopicCount, 
-        (select generate_series(1,$dictsize) i) as ss 
-   where mytimestamp = $num_iter ;
+   from madlib.lda_mymodel, 
+        (select generate_series(1,$dictsize) i) as ss;
    \endcode
    where $numtopics is the number of topics used in the learning process, and 
-   $num_iter is the number of iterations ran in the learning process.
+   $dictsize is the size of the dictionary.
 -# The total number of words assigned to each topic in the whole corpus can be computed 
    as follows:
    \code
@@ -163,7 +178,7 @@ by running the following commands inside the Greenplum Database.
 
 The input format for the Parallel LDA module is different from that used by the 
 `lda' package for R. In the `lda' package, each document is represented by two
-equal dimensional integer arrays. The first array represents the words the occur
+equal dimensional integer arrays. The first array represents the words that occur
 in the document, and the second array captures the number of times each word in
 the first array occurs in the document.
 This representation appears to have a major weakness in that all the occurrences
@@ -172,15 +187,13 @@ satisfactory. Further, at the time of writing, the main learning function in the
 `lda' package actually does not work correctly when the occurrence counts for words 
 aren't one.
 
-A major limitation of the module is that, at present, only one session of plda_run() 
-can be executed in each database. This is because each plda_run() stores its learning 
-result inside the madlib.lda_corpus table, and multiple plda_run()'s will attempt to 
-write to the same table and thus corrupt the intermediate learning result. This will
-be fixed in a future version.
-
 There is a script called generateTestCases.cc that can be used to generate some
 simple test documents to validate the correctness and effiency of the parallel
 LDA implementation.
+
+This module is not yet in the main MADlib repository. It currently sits in the 
+madlib/contrib directory and will be moved into the main madlib directory over
+time.
  
 @literature
 \section literature Literature
@@ -223,8 +236,8 @@ AS 'plda_support.so', 'randomTopics' LANGUAGE C STRICT;
 -- the count statistics obtained for the document and the whole corpus so far. 
 -- Parameters
 --   doc     : the document to be analysed
---   topics  : the topics of each word in the doc
---   topic_d : the topic distribution
+--   topics  : the topic of each word in the doc
+--   topic_d : the topic distribution for the doc
 --   global_count : the global word-topic counts
 --   topic_counts : the counts of all words in the corpus in each topic
 --   num_topics   : number of topics to be discovered
