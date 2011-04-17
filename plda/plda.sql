@@ -77,11 +77,10 @@ See also http://code.google.com/p/plda/.
 
 This is the main learning function.
 
--  Topic inference is achieved through the following Python function
+-  Topic inference is achieved through the following UDF
    \code
-   plda_run(datatable, dicttable, modeltable, outputdatatable, 
-            numiter int, numtopics int, alpha float8, eta float8, 
-            restart bool),
+   lda_run(datatable, dicttable, modeltable, outputdatatable, 
+           numiter int, numtopics int, alpha float8, eta float8),
    \endcode
    where datatable is the table where the corpus to be analysed is stored (the table is
    assumed to have the two columns: id int and contents int[]), dicttable is the table
@@ -91,10 +90,7 @@ This is the main learning function.
    the system will store a copy of the datatable plus topic assignments to each document,
    numiter is the number of iterations to run the Gibbs sampling, 
    numtopics is the number of topics to discover, alpha is the parameter to the topic Dirichlet
-   prior, eta is the parameter to the Dirichlet prior on the per-topic word distributions,
-   and restart is a boolean value indicating whether we are restarting a previously
-   terminated inference run. The plda_run() function needs to be run from within
-   Python.
+   prior, and eta is the parameter to the Dirichlet prior on the per-topic word distributions.
 
 There is another function that will allow users to predict the labels of new documents using
 the LDA model learned from a training corpus. This function, implemented as 
@@ -125,30 +121,18 @@ We now give a usage example.
    \code
    psql database_name -f importTestcases.sql
    \endcode     
--# To run the program, we need to call the plda_run() python function. The function 
-   plda_test() in plda.py contains an example of a call sequence. After making the 
-   necessary changes to the DB connection lines in plda.py for the appropriate username 
-   and password, and also the desired parameters for plda_run(), we can kick-start the 
+-# To run the program, we need to call the lda_run() function with the appropriate parameters. 
+   The file plda_test.sql contains an example of a call sequence. After making the 
+   necessary changes to the desired parameters for lda_run(), we can kick-start the 
    inference process by running the following:
    \code
-   python plda.py
+   psql database_name -f plda_test.sql
    \endcode
-   If the program terminates without converging to a good solution, we can restart 
-   the learning process where it terminated by executing the
-   plda_run() function again in Python, this time setting the restart parameter to True. 
-   For example,
-   \code
-   plda_run('madlib.lda_mycorpus', 'madlib.lda_mydict', 
-            'madlib.lda_mymodel', 'madlib.lda_corpus', 
-            50,10,0.5,0.5,True)
-   \endcode
-   This restarting process can be done multiple times. 
 
-
-After a successful run of the plda_run() function, the most probable words associated 
+After a successful run of the lda_run() function, the most probable words associated 
 with each topic are displayed. Other results of the learning process can be obtained 
-by running the following commands inside the Greenplum Database. Here we  assume
-the modeltable and outputdatatable parameters to plda_run() are 'madlib.lda_mymodel'
+by running the following commands inside the Greenplum Database. Here we assume
+the modeltable and outputdatatable parameters to lda_run() are 'madlib.lda_mymodel'
 and 'madlib.lda_corpus' respectively.
 
 -# The topic assignments for each document can be obtained as follows:
@@ -265,67 +249,93 @@ CREATE AGGREGATE madlib.lda_cword_agg(int4[], int4[], int4, int4, int4) (
 
 -- The main parallel LDA learning function
 CREATE OR REPLACE FUNCTION
-madlib.lda_train(dsize int4, num_topics int4, num_iter int4, init_iter int4, alpha float, eta float, 
-	    local_word_topic_count text, model_table text, data_table text) 
+madlib.lda_train(num_topics int4, num_iter int4, init_iter int4, alpha float, eta float, 
+	         data_table text, dict_table text, model_table text, output_data_table text) 
 RETURNS int4 AS $$
-	topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM " + data_table)
-	if (topic_counts_t.nrows() == 0):
-	    plpy.error("error: topic_counts not initialised properly")
-	topic_counts = topic_counts_t[0]['tc']
-
 	# -- Get dictionary size
+	dsize_t = plpy.execute("SELECT array_upper(dict,1) dsize FROM " + dict_table)
+	dsize = dsize_t[0]['dsize']
+
 	if (dsize == 0):
 	    plpy.error("error: dictionary has not been initialised")
 
-	# -- Get global word-topic counts computed FROM the previous call if available
-	temp_t = plpy.execute("SELECT count(*) temp FROM " + model_table +
-	       	 	      " WHERE mytimestamp = " + str(init_iter))
-	temp = temp_t[0]['temp']
+	# -- Initialise global word-topic counts 
+	plpy.info('Initialising global word-topic count')
+	glwcounts_t = plpy.execute("SELECT madlib.lda_zero_array(" + str(dsize*num_topics) + ") glwcounts")
+	glwcounts = glwcounts_t[0]['glwcounts']
 
-	if (temp == 1):
-	    plpy.info('Found global word-topic count FROM a previous call')
-	    glwcounts_t = plpy.execute("SELECT gcounts[1:" + str(dsize*num_topics) + "] glwcounts " +
-	    		               "FROM " + model_table + " WHERE mytimestamp = " + str(init_iter))
-	    glwcounts = glwcounts_t[0]['glwcounts']
-	else:
-	    plpy.info('Initialising global word-topic count for the very first time')
-	    glwcounts_t = plpy.execute("SELECT madlib.lda_zero_array(" + str(dsize*num_topics) + ") glwcounts")
-	    glwcounts = glwcounts_t[0]['glwcounts']
+	# -- This stores the local word-topic counts computed at each segment 
+	plpy.execute("CREATE TEMP TABLE local_word_topic_count ( id int4, mytimestamp int4, lcounts int4[] ) " + 
+                     "DISTRIBUTED BY (mytimestamp)")
 
-	# -- Clear the local and global word-topic counts FROM the previous call    
-	plpy.execute("DELETE FROM " + local_word_topic_count)
-	plpy.execute("DELETE FROM " + model_table)
+	# -- This stores the global word-topic counts	     
+	plpy.execute("CREATE TABLE " + model_table + " ( mytimestamp int4, gcounts int4[] ) " +
+		     "DISTRIBUTED BY (mytimestamp)")	     
+
+	# -- Copy corpus into temp table
+	plpy.execute("CREATE TEMP TABLE corpus0" + " ( id int4, contents int4[], topics madlib.lda_topics_t ) " +
+		     "WITH (appendonly=true, orientation=column, compresstype=quicklz) DISTRIBUTED RANDOMLY")
+
+	plpy.execute("INSERT INTO corpus0 (SELECT id, contents, madlib.lda_random_topics(array_upper(contents,1)," + str(num_topics) + 
+			     	  	  ") FROM " + data_table + ")")
+
+	# -- Get topic counts				  
+	topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM corpus0")
+	topic_counts = topic_counts_t[0]['tc']
 
 	for i in range(1,num_iter+1):
 	    iter = i + init_iter
-	    plpy.info('Starting iteration %d' % iter)
-	    # Randomly reassign topics to the words in each document, in parallel; the map step
-	    plpy.execute("UPDATE " + data_table +
-	                 " SET topics = madlib.lda_sample_new_topics(contents,(topics).topics,(topics).topic_d,'" 
-			     	 	     + str(glwcounts) + "','" + str(topic_counts) + "'," + str(num_topics) 
-					     + "," + str(dsize) + "," + str(alpha) + "," + str(eta) + ")")
-	    
+
+	    new_table_id = i % 2
+	    if (new_table_id == 0):
+	         old_table_id = 1
+	    else:
+		 old_table_id = 0	 
+
+	    plpy.execute("CREATE TEMP TABLE corpus" + str(new_table_id) + 
+	    	         " ( id int4, contents int4[], topics madlib.lda_topics_t ) " + 
+			 "WITH (appendonly=true, orientation=column, compresstype=quicklz) DISTRIBUTED RANDOMLY")
+
+	    # -- Randomly reassign topics to the words in each document, in parallel; the map step
+	    plpy.execute("INSERT INTO corpus" + str(new_table_id) 
+	    		 + " (SELECT id, contents, madlib.lda_sample_new_topics(contents,(topics).topics,(topics).topic_d,'" 
+			     	 	            + str(glwcounts) + "','" + str(topic_counts) + "'," + str(num_topics) 
+					            + "," + str(dsize) + "," + str(alpha) + "," + str(eta) + ") FROM corpus" + str(old_table_id) + ")")
+
+	    plpy.execute("DROP TABLE corpus" + str(old_table_id)) 
+    
 	    # -- Compute the local word-topic counts in parallel; the map step
-	    plpy.execute("INSERT INTO " + local_word_topic_count +
+	    plpy.execute("INSERT INTO local_word_topic_count " +
 	    		 " (SELECT gp_segment_id, " + str(iter) 
 			     	   + ", madlib.lda_cword_agg(contents,(topics).topics,array_upper(contents,1)," 
-				   + str(num_topics) + "," + str(dsize) + ") FROM " + data_table + 
+				   + str(num_topics) + "," + str(dsize) + ") FROM corpus" + str(new_table_id) + 
 			    " GROUP BY gp_segment_id)")  
 
-	    # -- Compute the global word-topic counts; the reduce step
+	    # -- Compute the global word-topic counts; the reduce step; Is storage into model_table necessary?
 	    plpy.execute("INSERT INTO " + model_table +
-	    		 " (SELECT " + str(iter) + ", sum(lcounts) FROM " + local_word_topic_count +
+	    		 " (SELECT " + str(iter) + ", sum(lcounts) FROM local_word_topic_count " +
 			  " WHERE mytimestamp = " + str(iter) + ")")
 	    
 	    glwcounts_t = plpy.execute("SELECT gcounts[1:" + str(dsize*num_topics) + "] glwcounts " +
 	    		  	       "FROM " + model_table + " WHERE mytimestamp = " + str(iter))
 	    glwcounts = glwcounts_t[0]['glwcounts']
 
-	    # Compute the denominator
-	    topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM " + data_table)
+	    # -- Compute the denominator
+	    topic_counts_t = plpy.execute("SELECT sum((topics).topic_d) tc FROM corpus" + str(new_table_id))
 	    topic_counts = topic_counts_t[0]['tc']
 
-	    plpy.info('  Done iteration %d' % iter)
+	    if (iter % 5 == 0):
+	         plpy.info('  Done iteration %d' % iter)
+
+	# -- This store a copy of the corpus of documents to be analysed
+	plpy.execute("CREATE TABLE " + output_data_table + 
+	             "( id int4, contents int4[], topics madlib.lda_topics_t ) DISTRIBUTED RANDOMLY")
+	plpy.execute("INSERT INTO " + output_data_table + " (SELECT * FROM corpus" + str(new_table_id) + ")")
+
+	# -- Clean up    
+	plpy.execute("DROP TABLE corpus" + str(new_table_id))
+	plpy.execute("DROP TABLE local_word_topic_count")
+	plpy.execute("DELETE FROM " + model_table + " WHERE mytimestamp < " + str(num_iter))
 
 	return init_iter + num_iter   
 $$ LANGUAGE plpythonu;
@@ -423,4 +433,34 @@ $$ LANGUAGE plpythonu;
 CREATE OR REPLACE FUNCTION madlib.lda_word_topic_distrn(arr int4[], ntopics int4, word int4, OUT ret int4[]) AS $$
        SELECT $1[(($3-1)*$2 + 1):(($3-1)*$2 + $2)];
 $$ LANGUAGE sql;
+
+
+CREATE OR REPLACE FUNCTION 
+madlib.lda_run(datatable text, dicttable text, modeltable text, outputdatatable text, 
+	       numiter int4, numtopics int4, alpha float, eta float)
+RETURNS VOID AS $$
+    restartstep = 0
+    plpy.execute("SELECT setseed(0.5)")
+        
+    plpy.info('Starting learning process')
+    plpy.execute("SELECT madlib.lda_train(" + str(numtopics) + "," 
+                               + str(numiter) +"," + str(restartstep) + "," 
+                               + str(alpha) + "," + str(eta) + ",'" + datatable + "', '" 
+			       + dicttable + "','" + modeltable + "','" + outputdatatable + "')")
+
+    # -- Print the most probable words in each topic
+    for i in range(1,numtopics+1):
+        rv = plpy.execute("select * from madlib.lda_topic_word_prob(" 
+                                            + str(numtopics) + "," + str(i) + "," + str(numiter) 
+                                            + ", '" + modeltable + "', '" + outputdatatable + "', '" 
+                                            + dicttable + "') order by -prob limit 20")
+        plpy.info( 'Topic %d' % i)
+        for j in range(0,min(len(rv),20)):
+            word = rv[j]['word']
+            prob = rv[j]['prob']
+            count = rv[j]['wcount']
+            plpy.info( ' %d) %s    %f  %d' % (j+1, word, prob, count))
+
+$$ LANGUAGE plpythonu;
+
 
