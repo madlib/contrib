@@ -343,15 +343,12 @@ $$ LANGUAGE plpythonu;
 CREATE TYPE madlib.lda_word_weight AS ( word text, prob float, wcount int4 );
 
 -- Returns the most important words for each topic, base on Pr( word | topic ).
+-- Returns the most important words for each topic, base on Pr( word | topic ).
 CREATE OR REPLACE FUNCTION 
 madlib.lda_topic_word_prob(num_topics int4, mytopic int4, ltimestamp int4, model_table text, data_table text, dict_table text) 
 RETURNS SETOF madlib.lda_word_weight AS $$
-       dict_t = plpy.execute("SELECT dict FROM " + dict_table)
-       if (dict_t.nrows() == 0):
-       	   plpy.error("error: failed to find dictionary")
-       dict = dict_t[0]['dict']
-       dict = map(int, dict[1:-1].split(',')) # -- convert string into array
-       dsize = len(dict)
+       dsize_t = plpy.execute("SELECT array_upper(dict,1) dsize FROM " + dict_table)
+       dsize = dsize_t[0]['dsize']
 
        glbcounts_t = plpy.execute("SELECT gcounts[1:" + str(dsize*num_topics) + "] glbcounts FROM " + model_table + 
        		     		  " WHERE mytimestamp = " + str(ltimestamp))
@@ -373,7 +370,9 @@ RETURNS SETOF madlib.lda_word_weight AS $$
        	   idx = i*num_topics + mytopic - 1
        	   wcount = glbcounts[idx]
 	   prob = wcount * 1.0 / topic_sum[mytopic - 1]
-	   ret = ret + [(dict[i],prob,wcount)]
+	   word_t = plpy.execute("SELECT dict[" + str(i+1) + "] word FROM " + dict_table);
+	   word = word_t[0]['word']
+	   ret = ret + [(word,prob,wcount)]
 
        return ret	   
 $$ LANGUAGE plpythonu;
