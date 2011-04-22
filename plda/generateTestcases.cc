@@ -51,17 +51,10 @@ int main() {
 	cin >> numdocs;
 	cerr << "Please enter number of words per document required.\n";
 	cin >> numwords;
-	/*
-	cout << "DROP TABLE IF EXISTS madlib.lda_corpus CASCADE;" << endl;
-	cout << "DROP TABLE IF EXISTS madlib.lda_dict CASCADE;" << endl;
 
-	cout << "CREATE TABLE madlib.lda_corpus ( id int, contents int[], topics madlib.topics_t ) DISTRIBUTED BY (id);" << endl;
-
-	cout << "CREATE TABLE madlib.lda_dict ( id int, a text[] ) DISTRIBUTED RANDOMLY;" << endl;
-	*/
-	cout << "DROP TABLE IF EXISTS madlib.mycorpus;\n";
-	cout << "CREATE TABLE madlib.mycorpus ( id int4, contents int4[] ) DISTRIBUTED BY (id);\n";
-	cout << "INSERT INTO madlib.mycorpus VALUES \n";
+	cout << "DROP TABLE IF EXISTS madlib.lda_mycorpus;\n";
+	cout << "CREATE TABLE madlib.lda_mycorpus ( id int4, contents int4[] ) DISTRIBUTED BY (id);\n";
+	cout << "INSERT INTO madlib.lda_mycorpus VALUES \n";
 	for (int i=0; i!=numdocs; i++) {
 		sampleTopicDistrn(ret);
 		// printTopicDistrn(ret);
@@ -82,9 +75,9 @@ int main() {
 	}
 
 	cout << endl << endl;
-	cout << "DROP TABLE IF EXISTS madlib.mydict;\n";
-	cout << "CREATE TABLE madlib.mydict ( dict text[] ) DISTRIBUTED RANDOMLY;\n";
-	cout << "insert into madlib.mydict values \n";
+	cout << "DROP TABLE IF EXISTS madlib.lda_mydict;\n";
+	cout << "CREATE TABLE madlib.lda_mydict ( dict text[] ) DISTRIBUTED RANDOMLY;\n";
+	cout << "insert into madlib.lda_mydict values \n";
 	cout << " ('{";
 	for (int i=1; i!=maxword; i++)
 		cout << i << ",";
