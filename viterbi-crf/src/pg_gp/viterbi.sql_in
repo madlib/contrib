@@ -174,20 +174,7 @@ MADLIB_SCHEMA.vcrf_label(segtbl text, factortbl text, labeltbl text, resulttbl t
   plpy.execute(query);
   
   query = """
-  -- -- take max*1000 score for each factor, tag on the segment id
-  -- -- and store result in vcrf_factorstable.
-  -- -- uses input: factors_with_dup
-  -- drop view if exists madlib.vcrf_factorstable;
-  -- create view madlib.vcrf_factorstable AS 
-  --   select seg_id,label,prev_label,(max(score)*1000) as score 
-  --     from madlib.vcrf_factors_with_dup factors,
-  --          madlib.vcrf_segment_lookup SH 
-  --    where factors.seg_text=SH.seg_text 
-  --    group by seg_id,label,prev_label;
-  -- analyze madlib.vcrf_factorstable;
-
   -- for each seg_id, store array representation of max factor-score * 1000
-  -- drop table if exists """ + factors + """ cascade;
   select seg_id, pg_catalog.array_agg(score) as score
     into """ + factors + """
     from (select seg_id, (max(score)*1000)::integer as score
@@ -208,7 +195,6 @@ MADLIB_SCHEMA.vcrf_label(segtbl text, factortbl text, labeltbl text, resulttbl t
 
   query = """
   -- distinct doc_ids
-  -- drop table if exists madlib.vcrf_doc_ids;
   select distinct(doc_id) as doc_id
   into """ + doc_ids + """
   from """ + segs + """;
@@ -217,8 +203,6 @@ MADLIB_SCHEMA.vcrf_label(segtbl text, factortbl text, labeltbl text, resulttbl t
   plpy.execute(query);
   
   query = """
-  -- requires vcrf_segments, vcrf_factors
-  -- drop table if exists madlib.vcrf_norm_factors;
   select doc_id, 
          madlib.__vcrf_normalization(\'""" + segs + """\',
                                    \'""" + factors + """\',
@@ -230,13 +214,11 @@ MADLIB_SCHEMA.vcrf_label(segtbl text, factortbl text, labeltbl text, resulttbl t
   plpy.execute(query);
   
   query = """
-  -- drop index if exists MADLIB_SCHEMA.vcrf_norm_factors_doc_id;
   create index """ + prefix + "norm_factors_doc_id on " + norm_factors + "(doc_id);"
 
   plpy.execute(query);
 
   query = """
-  -- drop index if exists vcrf_segments_doc_id_start_pos;
   create index """ + prefix + """_segments_doc_id_start_pos on 
   """ + segs + """(doc_id, start_pos);"""
 
