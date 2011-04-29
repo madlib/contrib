@@ -1,3 +1,4 @@
+#include <madlib/ports/postgres/compatibility.hpp>
 #include <madlib/ports/postgres/PGAllocator.hpp>
 #include <madlib/ports/postgres/PGArrayHandle.hpp>
 #include <madlib/ports/postgres/PGInterface.hpp>
@@ -50,7 +51,7 @@ ArrayType *PGAllocator::internalAllocateForArray(Oid inElementType,
     ARR_DIMS(array)[0] = inNumElements;
     ARR_LBOUND(array)[0] = 1;
     arrayData = ARR_DATA_PTR(array);
-    memset(arrayData, 0, inElementSize * inNumElements);
+    std::memset(arrayData, 0, inElementSize * inNumElements);
     return array;
 }
 
@@ -155,7 +156,7 @@ void *PGAllocator::allocate(const uint32_t inSize, const std::nothrow_t&) const
          * This cannot be due to an interrupt, so it's reasonably safe
          * to assume that the PG exception was a pure memory-allocation
          * issue. We ignore the error and flush the error state.
-         * Flushing is necessary to leaving the error state (e.g., the memory
+         * Flushing is necessary for leaving the error state (e.g., the memory
          * context is restored).
          */
         FlushErrorState();
@@ -167,7 +168,7 @@ void *PGAllocator::allocate(const uint32_t inSize, const std::nothrow_t&) const
 }
 
 /**
- * FIXME: Think again whether we our error-handling policy (ignoring) is appripriate
+ * FIXME: Think again whether our error-handling policy (ignoring) is appropriate
  * The default implementation calls AllocSetFree() from utils/mmgr/aset.c.
  * We must not throw errors, so we are essentially ignoring all errors.
  * This function is also called by operator delete (),

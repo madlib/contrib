@@ -1,5 +1,4 @@
-"""
-@file plpy.py
+"""@file plpy.py
 
 @brief Python functions to connect and interact with the database
 @author Aleksander Gorajek
