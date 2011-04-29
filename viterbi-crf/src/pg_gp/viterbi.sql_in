@@ -1,13 +1,7 @@
 --! \file viterbi.sql_in
 --!
---! * Try it out!
+--! * Basic usage
 --! \code
---!   -- Load this file
---!   \i viterbi.sql
---!  
---!   -- Load the enron sample data
---!   \i load_enron.sql
---!
 --!   -- Compute the Max-Likelihood segmentation for each document.
 --!   select MADLIB_SCHEMA.vcrf_label('enron.segments_with_dup', 'enron.factors_with_dup', 'enron.labels', 'enron.extraction', 'enron', 'e');
 --!

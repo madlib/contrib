@@ -1,10 +1,10 @@
 PG_CONFIG = pg_config
 MODULE_big = viterbi
-DATA_built = viterbi.sql
+DATA_built = viterbi.sql sql/enron_test.sql
 SRCS = topk_array.c
 OBJS = $(SRCS:.c=.o)
 SHLIB_LINK = -lpq
-#REGRESS = setup fm_test cm_test sketch_support_test mfv_test
+REGRESS = enron_test
 #DOCS = README.sketch_support
 
 PGXS := $(shell pg_config --pgxs)
