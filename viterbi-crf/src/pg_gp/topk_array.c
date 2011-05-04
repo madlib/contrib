@@ -5,23 +5,23 @@
 #include <math.h>
 #include "catalog/pg_type.h"
 
-Datum vcrf_max_top1_array(PG_FUNCTION_ARGS);
-Datum vcrf_topk_array(PG_FUNCTION_ARGS);
-Datum vcrf_sum_array(PG_FUNCTION_ARGS);
-Datum vcrf_sum(PG_FUNCTION_ARGS);
+Datum __vcrf_max_top1_array(PG_FUNCTION_ARGS);
+Datum __vcrf_topk_array(PG_FUNCTION_ARGS);
+Datum __vcrf_sum_array(PG_FUNCTION_ARGS);
+Datum __vcrf_sum(PG_FUNCTION_ARGS);
 
 PG_MODULE_MAGIC;
 
 /*
  *
- * create function vcrf_max_top1_array(anyarray) returns anyarray as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/vcrf_topk_array', 'vcrf_max_top1_array' language c strict;
+ * create function __vcrf_max_top1_array(anyarray) returns anyarray as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/__vcrf_topk_array', '__vcrf_max_top1_array' language c strict;
  *
  *  */
 
-PG_FUNCTION_INFO_V1(vcrf_max_top1_array);
+PG_FUNCTION_INFO_V1(__vcrf_max_top1_array);
 
 Datum
-vcrf_max_top1_array(PG_FUNCTION_ARGS)
+__vcrf_max_top1_array(PG_FUNCTION_ARGS)
 {
         ArrayType  *v1 ;
         // ,
@@ -99,14 +99,14 @@ vcrf_max_top1_array(PG_FUNCTION_ARGS)
 
 /*
 
-create function vcrf_topk_array(anyarray, anyarray) returns anyarray as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/vcrf_topk_array', 'vcrf_topk_array' language c strict;
+create function __vcrf_topk_array(anyarray, anyarray) returns anyarray as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/__vcrf_topk_array', '__vcrf_topk_array' language c strict;
  
  */
 
-PG_FUNCTION_INFO_V1(vcrf_topk_array);
+PG_FUNCTION_INFO_V1(__vcrf_topk_array);
 
 Datum
-vcrf_topk_array(PG_FUNCTION_ARGS)
+__vcrf_topk_array(PG_FUNCTION_ARGS)
 {
 	ArrayType  *v1,
 			   *v2;
@@ -198,14 +198,14 @@ vcrf_topk_array(PG_FUNCTION_ARGS)
 /*
  * 
 
-create function vcrf_sum_array(anyarray, anyarray) returns anyarray as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/vcrf_topk_array', 'vcrf_sum_array' language c strict;
+create function __vcrf_sum_array(anyarray, anyarray) returns anyarray as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/__vcrf_topk_array', '__vcrf_sum_array' language c strict;
  
  */
 
-PG_FUNCTION_INFO_V1(vcrf_sum_array);
+PG_FUNCTION_INFO_V1(__vcrf_sum_array);
 
 Datum
-vcrf_sum_array(PG_FUNCTION_ARGS)
+__vcrf_sum_array(PG_FUNCTION_ARGS)
 {
 	ArrayType  *v1,
 			   *v2;
@@ -297,14 +297,14 @@ compute the sum_i of log(v1[i]/1000), return (e^sum)*1000
 used in the UDFs which needs marginalization
 e.g. normalization 
 
-create function vcrf_sum(anyarray) returns integer as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/vcrf_topk_array', 'sum' language c strict;
+create function __vcrf_sum(anyarray) returns integer as '/home/daisyw/p84/mingw-postgresql-8.4dev/src/bayesstore/__vcrf_topk_array', 'sum' language c strict;
  
  */
 
-PG_FUNCTION_INFO_V1(vcrf_sum);
+PG_FUNCTION_INFO_V1(__vcrf_sum);
 
 Datum
-vcrf_sum(PG_FUNCTION_ARGS)
+__vcrf_sum(PG_FUNCTION_ARGS)
 {
 	ArrayType  *v1;
 	int	i;
